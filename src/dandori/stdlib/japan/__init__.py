@@ -8,13 +8,15 @@
 from dandori.frontend import ast
 from dandori.frontend.conjugation import Conjugation
 from dandori.plugin.registry import DateProperty, Param, Registry, VerbError, VerbSpec
-from dandori.stdlib.japan import tax
+from dandori.stdlib.japan import names, tax
+from dandori.table.interface import BLANK
 from dandori.stdlib.japan.calendar import load_bank_calendar
 from dandori.stdlib.japan.payment import parse_terms
 from dandori.types import Type
 
 _DATE = frozenset({Type.DATE})
 _STRING = frozenset({Type.STRING})
+_STRINGS = frozenset({Type.STRING, Type.STRING_LIST})
 
 
 def check_payment(args, types, ctx):
@@ -22,6 +24,13 @@ def check_payment(args, types, ctx):
     terms = args.get("terms")
     if isinstance(terms, ast.String) and parse_terms(terms.value) is None:
         raise VerbError("E3052", terms=terms.value)
+
+
+def totonoeru(ctx, text):
+    """「ｶ)ﾔﾏﾀﾞｼﾖｳｼﾞ」を整える → ヤマダシヨウジ（语法设计第 15 节）。空欄保持为空欄"""
+    if isinstance(text, list):
+        return [v if v is BLANK else names.normalize_name(v) for v in text]
+    return names.normalize_name(text)
 
 
 def payment_day(ctx, day, terms):
@@ -44,6 +53,14 @@ def register(registry: Registry) -> None:
         "japan.支払日にする", "支払日にする", Conjugation.SURU,
         params=(Param("を", "day", _DATE), Param("で", "terms", _STRING)),
         returns=Type.DATE, impl=payment_day, check=check_payment,
+    ))
+
+    registry.rule_data["表記ゆれ規則"] = names.DESCRIPTION
+    registry.add_verb(VerbSpec(
+        "japan.整える", "整える", Conjugation.ICHIDAN,
+        params=(Param("を", "text", _STRINGS),),
+        returns=None, impl=totonoeru, infer=lambda args, types, ctx: types.get("text"),
+        uses="表記ゆれ規則",
     ))
 
     registry.rule_data["消費税率"] = tax.DESCRIPTION
