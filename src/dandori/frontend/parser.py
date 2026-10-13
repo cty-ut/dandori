@@ -2,14 +2,15 @@
 
 用的方法叫"递归下降"：语法里的每一条规则写成一个函数，函数之间互相调用。
 
-    プログラム ＝ { 文 }                        → _program()
-    文       ＝ 手順 { 、? 手順 } 。            → _sentence()
-    手順     ＝ { 引数句 } 動詞                 → _step()
-    引数句    ＝ 名詞句 助詞                     → _arg()
-    名詞句    ＝ 式 { と 式 }                    → _noun_phrase()
-    式       ＝ 項 { (+|-) 項 }                 → _expr()
-    項       ＝ 因子 { (×|÷) 因子 }             → _term()
-    因子     ＝ 数 | 文字列 | それ | ( 式 ) | - 因子  → _factor()
+    プログラム ＝ { 代入文 | 手順文 }                         → program()
+    代入文    ＝ 名前 は 名詞句 とする 。                      → _assignment()
+    手順文    ＝ 手順 { 、? 手順 } [ 、? 名前 とする ] 。       → _sentence()
+    手順     ＝ { 引数句 } 動詞                              → _step()
+    引数句    ＝ 名詞句 助詞                                  → _arg()
+    名詞句    ＝ 式 { と 式 }                                 → _noun_phrase()
+    式       ＝ 項 { (+|-) 項 }                              → _expr()
+    項       ＝ 因子 { (×|÷) 因子 }                          → _term()
+    因子     ＝ 数 | 文字列 | それ | 名前 | ( 式 ) | - 因子     → _factor()
 
 出错时的策略：一句话里出了错，就跳到下一个「。」，从下一句继续解析。
 这样一次就能报出整个程序里的所有错误。
@@ -45,15 +46,45 @@ class _Parser:
         sentences = []
         while self._current().kind is not K.EOF:
             try:
-                sentences.append(self._sentence())
+                if self._starts_assignment():
+                    sentences.append(self._assignment())
+                else:
+                    sentences.append(self._sentence())
             except _SentenceError:
                 self._skip_to_next_sentence()
         end = self._current().span.end
         return ast.Program(tuple(sentences), Span(0, end)), self.errors
 
+    def _starts_assignment(self) -> bool:
+        """以「名前 は」开头的是代入文
+
+        名字写错了（如「答え」）、被断词器标成"不明"时也算，避免连锁报错。
+        """
+        return (self._current().kind in (K.NAME, K.UNKNOWN)
+                and self._peek(1).kind is K.PARTICLE and self._peek(1).text == "は")
+
+    def _assignment(self) -> ast.Assignment:
+        """代入文 ＝ 名前 は 名詞句 とする 。"""
+        name_token = self._advance()
+        self._advance()   # は
+        target = ast.NameRef(name_token.value or name_token.text, name_token.span)
+
+        if not self._starts_value(self._current()):
+            self._error("E2010", name_token.span, name=name_token.text)
+            raise _SentenceError
+        value = self._noun_phrase()
+        if not self._is_keyword("とする"):
+            self._error("E2010", Span(name_token.span.start, value.span.end), name=name_token.text)
+            raise _SentenceError
+        self._advance()
+
+        self._end_sentence()
+        return ast.Assignment(target, value, Span(name_token.span.start, self._previous().span.end))
+
     def _sentence(self) -> ast.Sentence:
-        """文 ＝ 手順 { 、? 手順 } 。"""
+        """手順文 ＝ 手順 { 、? 手順 } [ 、? 名前 とする ] 。"""
         steps = [self._step()]
+        bind = None
 
         while True:
             verb = steps[-1].verb
@@ -82,9 +113,29 @@ class _Parser:
             if token.kind is K.COMMA:
                 self._advance()
 
+            # 句末给结果起名：〜して、合計とする。
+            if self._current().kind is K.NAME and self._peek(1).kind is K.KEYWORD:
+                name_token = self._advance()
+                self._advance()   # とする
+                bind = ast.NameRef(name_token.value, name_token.span)
+                self._end_sentence()
+                break
+
             steps.append(self._step())
 
-        return ast.Sentence(tuple(steps), Span(steps[0].span.start, self._previous().span.end))
+        span = Span(steps[0].span.start, self._previous().span.end)
+        return ast.Sentence(tuple(steps), span, bind)
+
+    def _end_sentence(self) -> None:
+        """句子在这里必须结束：期待「。」"""
+        token = self._current()
+        if token.kind is K.PERIOD:
+            self._advance()
+        elif token.kind is K.EOF or not self._same_line(self._previous().span, token.span):
+            self._error("E2001", self._point_after(self._previous().span))
+        else:
+            self._unexpected(token)
+            raise _SentenceError
 
     def _step(self) -> ast.Step:
         """手順 ＝ { 引数句 } 動詞"""
@@ -109,8 +160,16 @@ class _Parser:
         """引数句 ＝ 名詞句 助詞"""
         value = self._noun_phrase()
         token = self._current()
+        if isinstance(value, ast.ErrorExpr) and token.kind is not K.PARTICLE:
+            # 不认识的词后面没有助词：多半是写错的动词（如「計算する」），
+            # 断词时已经报过错，这里安静地放弃这一句
+            raise _SentenceError
         if token.kind is K.COMMA:
             self._error("E2002", token.span)
+            raise _SentenceError
+        if token.kind is K.KEYWORD:
+            # 「合計とする。」「100とする。」：とする 的用法不对
+            self._error("E2009", token.span)
             raise _SentenceError
         if token.kind is not K.PARTICLE:
             self._error("E2007", value.span, word=self.source.slice(value.span))
@@ -172,6 +231,12 @@ class _Parser:
         if token.kind is K.PRONOUN:
             self._advance()
             return ast.Sore(token.span)
+        if token.kind is K.NAME:
+            self._advance()
+            return ast.Name(token.value, token.span)
+        if token.kind is K.UNKNOWN:
+            self._advance()
+            return ast.ErrorExpr(token.span)
         if self._is_operator("-"):
             self._advance()
             operand = self._factor()
@@ -205,6 +270,10 @@ class _Parser:
             self.pos += 1
         return token
 
+    def _is_keyword(self, word: str) -> bool:
+        token = self._current()
+        return token.kind is K.KEYWORD and token.text == word
+
     def _is_operator(self, *ops: str) -> bool:
         token = self._current()
         return token.kind is K.OPERATOR and token.value in ops
@@ -212,7 +281,7 @@ class _Parser:
     @staticmethod
     def _starts_value(token: Token) -> bool:
         """这个 Token 能否作为一个值的开头"""
-        return (token.kind in (K.NUMBER, K.STRING, K.PRONOUN, K.LPAREN)
+        return (token.kind in (K.NUMBER, K.STRING, K.PRONOUN, K.NAME, K.LPAREN, K.UNKNOWN)
                 or (token.kind is K.OPERATOR and token.value == "-"))
 
     def _same_line(self, a: Span, b: Span) -> bool:

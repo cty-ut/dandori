@@ -27,3 +27,7 @@ def test_fullwidth_period_only_between_digits():
 def test_long_vowel_mark_is_never_converted():
     assert normalize("データ") == "データ"
     assert normalize("10ー5") == "10ー5"
+
+
+def test_fullwidth_letters():
+    assert normalize("ＩＤとｉｄ＿１") == "IDとid_1"

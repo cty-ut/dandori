@@ -35,6 +35,13 @@ class Sore:
 
 
 @dataclass(frozen=True)
+class Name:
+    """变量名：税率"""
+    name: str        # 正規化后的名字（ＩＤ 和 ID 相同）
+    span: Span
+
+
+@dataclass(frozen=True)
 class ListExpr:
     """用「と」连起来的值：100と200"""
     items: tuple[Expr, ...]
@@ -56,7 +63,19 @@ class Negate:
     span: Span
 
 
-Expr = Number | String | Sore | ListExpr | BinaryOp | Negate
+@dataclass(frozen=True)
+class PreviousResult:
+    """上一步的结果被自动填入空着的参数槽。由意味解析插入，構文解析不会产生"""
+    span: Span
+
+
+@dataclass(frozen=True)
+class ErrorExpr:
+    """不认识的词所在的位置。错误已经在断词时报过，后续阶段遇到它一律不再报错"""
+    span: Span
+
+
+Expr = Number | String | Sore | Name | ListExpr | BinaryOp | Negate | PreviousResult | ErrorExpr
 
 
 # ---------- 句子结构 ----------
@@ -86,15 +105,33 @@ class Step:
 
 
 @dataclass(frozen=True)
+class NameRef:
+    name: str
+    span: Span
+
+
+@dataclass(frozen=True)
 class Sentence:
-    """文：用て形串起来的若干个手順，以「。」结尾"""
+    """手順文：用て形串起来的若干个手順，以「。」结尾
+
+    句末可以给结果起名：100と200を足して、合計とする。
+    """
     steps: tuple[Step, ...]
+    span: Span
+    bind: NameRef | None = None
+
+
+@dataclass(frozen=True)
+class Assignment:
+    """代入文：税率は0.1とする。"""
+    target: NameRef
+    value: Expr
     span: Span
 
 
 @dataclass(frozen=True)
 class Program:
-    sentences: tuple[Sentence, ...]
+    sentences: tuple[Sentence | Assignment, ...]
     span: Span
 
 
@@ -130,8 +167,12 @@ def _describe(node) -> tuple[str, list]:
     match node:
         case Program(sentences=sentences):
             return "プログラム", list(sentences)
-        case Sentence(steps=steps):
+        case Sentence(steps=steps, bind=None):
             return "文", list(steps)
+        case Sentence(steps=steps, bind=bind):
+            return f"文 → {bind.name}とする", list(steps)
+        case Assignment(target=target, value=value):
+            return f"代入 {target.name}", [value]
         case Step(args=args, verb=verb):
             return f"手順 {verb.lemma}（{verb.form.value}）", list(args)
         case Arg(particle=particle, value=value):
@@ -148,4 +189,10 @@ def _describe(node) -> tuple[str, list]:
             return f"文字列 「{value}」", []
         case Sore():
             return "それ", []
+        case Name(name=name):
+            return f"名前 {name}", []
+        case PreviousResult():
+            return "（前の結果）", []
+        case ErrorExpr():
+            return "（不明）", []
     raise TypeError(f"未知のノード：{node!r}")

@@ -170,3 +170,50 @@ def test_dump(run):
         "               ├─ 数 200",
         "               └─ 数 3",
     ])
+
+
+# ---------- 阶段 2-1：赋值 ----------
+
+def test_assignment(run):
+    program, errors = run("税率は0.1とする。")
+    assert errors == []
+    (stmt,) = program.sentences
+    assert isinstance(stmt, ast.Assignment)
+    assert stmt.target.name == "税率"
+    assert stmt.value.value == Decimal("0.1")
+
+
+def test_assignment_with_expression_and_list(run):
+    program, errors = run("合計は合計+1とする。一覧は1と2とする。")
+    assert errors == []
+    first, second = program.sentences
+    assert first.value.op == "+"
+    assert isinstance(second.value, ast.ListExpr)
+
+
+def test_binding_at_end_of_sentence(run):
+    program, errors = run("100と200を足して、合計とする。")
+    assert errors == []
+    (sentence,) = program.sentences
+    assert sentence.bind.name == "合計"
+    assert [s.verb.lemma for s in sentence.steps] == ["足す"]
+
+
+def test_name_as_value(run):
+    program, errors = run("価格×税率を表示する。")
+    assert errors == []
+    expr = value_of(only_sentence(program).steps[0], "を")
+    assert (expr.left.name, expr.right.name) == ("価格", "税率")
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("合計とする。", ["E2009"]),
+    ("100とする。", ["E2009"]),
+    ("単価は500。", ["E2010"]),
+    ("単価は表示する。", ["E2010"]),
+    ("合計は1とする", ["E2001"]),
+    ("100を足して、合計とする表示する。", ["E2008"]),
+])
+def test_assignment_errors(run, code, expected):
+    _, errors = run(code)
+    assert [e.code for e in errors] == expected

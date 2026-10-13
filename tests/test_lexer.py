@@ -74,7 +74,8 @@ def test_string_content_is_original(lexicon):
 def test_longest_match():
     # 「と」（助词）和「とる」（动词）同时存在时，「とる」必须整体匹配
     registry = Registry()
-    registry.add_verb(VerbSpec("test.とる", "とる", Conjugation.GODAN))
+    registry.add_verb(VerbSpec("test.とる", "とる", Conjugation.GODAN,
+                               params=(), returns=None, impl=lambda ctx: None))
     lexicon = Lexicon.from_registry(registry)
     tokens, errors = lex("1とる。", lexicon)
     assert errors == []
@@ -110,3 +111,55 @@ def test_long_vowel_between_numbers(lexicon):
 def test_multiple_errors_reported_together(lexicon):
     _, errors = lex("ねこを表示する。\n10ー5を表示する。", lexicon)
     assert [e.code for e in errors] == ["E1001", "E1003"]
+
+
+# ---------- 阶段 2-1：名字 ----------
+
+@pytest.mark.parametrize("code, names", [
+    ("税率を表示する。", ["税率"]),
+    ("データを表示する。", ["データ"]),          # 片假名含长音符
+    ("A社と第2四半期を足す。", ["A社", "第2四半期"]),
+    ("表示件数を表示する。", ["表示件数"]),        # 开头和动词相同，但不是动词
+    ("割引額を表示する。", ["割引額"]),
+    ("各々を表示する。", ["各々"]),
+])
+def test_names(lexicon, code, names):
+    tokens, errors = lex(code, lexicon)
+    assert errors == []
+    assert [t.value for t in tokens if t.kind is K.NAME] == names
+
+
+def test_dictionary_wins_inside_name(lexicon):
+    tokens, _ = lex("合計表示する。", lexicon)
+    assert kinds_and_texts(tokens) == [(K.NAME, "合計"), (K.VERB, "表示する"), (K.PERIOD, "。")]
+
+
+def test_fullwidth_name_is_same_as_halfwidth(lexicon):
+    tokens, _ = lex("ＩＤ", lexicon)
+    assert (tokens[0].text, tokens[0].value) == ("ＩＤ", "ID")
+
+
+def test_assignment_tokens(lexicon):
+    tokens, errors = lex("合計は0とする。", lexicon)
+    assert errors == []
+    assert kinds_and_texts(tokens) == [
+        (K.NAME, "合計"), (K.PARTICLE, "は"), (K.NUMBER, "0"), (K.KEYWORD, "とする"), (K.PERIOD, "。"),
+    ]
+
+
+@pytest.mark.parametrize("word, hint", [
+    ("売り上げ", "「売上」のように書いてください"),
+    ("支払い", "「支払」のように書いてください"),
+    ("お客様", "漢字かカタカナで書いてください"),
+])
+def test_hiragana_in_name(lexicon, word, hint):
+    tokens, errors = lex(f"{word}を表示する。", lexicon)
+    assert [e.code for e in errors] == ["E1004"]
+    assert errors[0].message.endswith(hint)
+    assert tokens[0].kind is K.UNKNOWN
+
+
+@pytest.mark.parametrize("word", ["計算する", "振り込む", "計算して"])
+def test_misspelled_verb_is_not_reported_as_name(lexicon, word):
+    _, errors = lex(f"100を{word}。", lexicon)
+    assert [e.code for e in errors] == ["E1001"]

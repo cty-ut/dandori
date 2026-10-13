@@ -14,6 +14,10 @@ _DIGITS = set("0123456789" + _FULLWIDTH_DIGITS)
 
 _TABLE = {
     **{fw: str(i) for i, fw in enumerate(_FULLWIDTH_DIGITS)},
+    # 全角英文字母：ＩＤ 和 ID 是同一个名字
+    **{chr(0xFF21 + i): chr(ord("A") + i) for i in range(26)},
+    **{chr(0xFF41 + i): chr(ord("a") + i) for i in range(26)},
+    "＿": "_",
     "＋": "+",
     "－": "-",
     "＊": "*", "×": "*",

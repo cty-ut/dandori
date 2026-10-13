@@ -14,8 +14,9 @@ from dandori.frontend.conjugation import Form, conjugate
 from dandori.frontend.tokens import TokenKind
 from dandori.plugin.registry import Registry
 
-PARTICLES = ("と", "を", "から", "で", "に")
+PARTICLES = ("と", "を", "から", "で", "に", "は")
 PRONOUNS = ("それ",)
+KEYWORDS = ("とする",)   # 最长匹配保证「合計とする」切成 合計 / とする，而不是 合計 / と / する
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,8 @@ class Lexicon:
             lexicon.add(word, Entry(TokenKind.PARTICLE))
         for word in PRONOUNS:
             lexicon.add(word, Entry(TokenKind.PRONOUN))
+        for word in KEYWORDS:
+            lexicon.add(word, Entry(TokenKind.KEYWORD))
         for verb in registry.verbs:
             for form, surface in conjugate(verb.dictionary_form, verb.conjugation).items():
                 lexicon.add(surface, Entry(TokenKind.VERB, verb.id, verb.dictionary_form, form))

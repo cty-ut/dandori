@@ -16,11 +16,14 @@ class TokenKind(Enum):
     PARTICLE = "助詞"
     VERB = "動詞"
     PRONOUN = "指示語"
+    NAME = "名前"
+    KEYWORD = "キーワード"
     OPERATOR = "演算子"
     LPAREN = "左括弧"
     RPAREN = "右括弧"
     COMMA = "読点"
     PERIOD = "句点"
+    UNKNOWN = "不明"      # 不认识的词：已经报过 E1001，留作占位，避免后续阶段连锁报错
     EOF = "終端"
 
 
@@ -30,7 +33,7 @@ class Token:
     text: str              # 用户写的原文（正規化之前），如「×」「１００」
     span: Span
     # 以下字段只有部分种类才有
-    value: int | Decimal | str | None = None  # 数的值、字符串的内容、演算子的标准写法（+-*/）
+    value: int | Decimal | str | None = None  # 数的值、字符串的内容、演算子的标准写法（+-*/）、名字（正規化后）
     verb_id: str | None = None                # 动词的完整标识，如 "std.足す"
     lemma: str | None = None                  # 动词的辞书形
     form: Form | None = None                  # 动词的活用形
