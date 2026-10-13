@@ -44,30 +44,31 @@ def _days(n) -> timedelta:
     return timedelta(days=n)
 
 
-def _shift(d: date, offset, sign: int, calendar):
-    """日付 ± 数（天数）・営業日数・月数（语法设计 13.3、14.4、14.5）"""
+def _shift(d: date, offset, sign: int, calendar_for):
+    """日付 ± 数（天数）・営業日数・月数（语法设计 13.3、14.4、14.5）
+
+    calendar_for：日历的种类（「銀行」「会社」）→ 营业日历
+    """
     if isinstance(offset, dates.BusinessDays):
-        if calendar is None:
-            raise VerbError("E5012", first="?", last="?", date=dates.format_western(d))
-        return calendar.shift(d, sign * offset.count)
+        return calendar_for(offset.calendar).shift(d, sign * offset.count)
     if isinstance(offset, dates.Months):
         return dates.add_months(d, sign * offset.count)
     return d + sign * _days(offset)
 
 
-def add(a, b, calendar=None):
+def add(a, b, calendar_for=None):
     # 日付 + 数：数是天数（语法设计 13.3）
     if isinstance(a, date):
-        return _shift(a, b, 1, calendar)
+        return _shift(a, b, 1, calendar_for)
     if isinstance(b, date):
-        return _shift(b, a, 1, calendar)
+        return _shift(b, a, 1, calendar_for)
     return _wrap(_amount(a) + _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
 
-def subtract(a, b, calendar=None):
+def subtract(a, b, calendar_for=None):
     # 日付 − 日付 = 天数；日付 − 数 = 日付
     if isinstance(a, date):
-        return (a - b).days if isinstance(b, date) else _shift(a, b, -1, calendar)
+        return (a - b).days if isinstance(b, date) else _shift(a, b, -1, calendar_for)
     return _wrap(_amount(a) - _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
 

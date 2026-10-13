@@ -7,7 +7,8 @@
 
 from dandori.frontend import ast
 from dandori.frontend.conjugation import Conjugation
-from dandori.plugin.registry import DateProperty, Param, Registry, VerbError, VerbSpec
+from dandori.plugin.registry import (DateProperty, Param, Registry, SettingKind, SettingSpec, VerbError,
+                                     VerbSpec)
 from dandori.stdlib.japan import names, reconcile, tax
 from dandori.table.interface import BLANK
 from dandori.stdlib.japan.calendar import load_bank_calendar
@@ -17,6 +18,24 @@ from dandori.types import Type
 _DATE = frozenset({Type.DATE})
 _STRING = frozenset({Type.STRING})
 _STRINGS = frozenset({Type.STRING, Type.STRING_LIST})
+
+
+def check_company_holidays(path: str, ctx):
+    """「暦の会社休日」：编译时读取，第一列必须是日付"""
+    _company_days(path, ctx.base_dir)
+
+
+def _company_days(path: str, base_dir):
+    from dandori.connectors import ConnectorError
+    from dandori.connectors.csv import read_csv
+    from dandori.stdlib.files import resolve
+    try:
+        table = read_csv(resolve(path, base_dir), path)
+    except ConnectorError as e:
+        raise VerbError(e.code, **e.params) from None
+    if table.type.columns[0][1] is not Type.DATE:
+        raise VerbError("E3061", file=path)
+    return table, {row[0] for row in table.rows if row[0] is not BLANK}
 
 
 def check_payment(args, types, ctx):
@@ -45,6 +64,19 @@ def register(registry: Registry) -> None:
     calendar = load_bank_calendar()
     registry.calendar = calendar
     registry.rule_data["祝日"] = calendar.description
+
+    # 公司日历（语法设计 17.3）：暦の会社休日は「会社休日.csv」とする。
+    registry.add_setting(SettingSpec("暦", "会社休日", SettingKind.FILE, check_company_holidays))
+
+    def company_calendar(ctx):
+        from dandori.stdlib.files import check_permission, resolve
+        path = ctx.settings[("暦", "会社休日")]
+        check_permission(ctx, "読み込み", path)
+        table, days = _company_days(path, ctx.base_dir)
+        ctx.record_read(path, resolve(path, ctx.base_dir), len(table))
+        return calendar.with_company_holidays(days)
+
+    registry.calendar_factories["会社"] = company_calendar
 
     registry.add_date_property(DateProperty("翌営業日", calendar.next, Type.DATE, uses="祝日"))
     registry.add_date_property(DateProperty("前営業日", calendar.previous, Type.DATE, uses="祝日"))

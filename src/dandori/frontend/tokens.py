@@ -24,6 +24,7 @@ class TokenKind(Enum):
     LPAREN = "左括弧"
     RPAREN = "右括弧"
     COMMA = "読点"
+    COLON = "コロン"
     PERIOD = "句点"
     UNKNOWN = "不明"      # 不认识的词：已经报过 E1001，留作占位，避免后续阶段连锁报错
     EOF = "終端"

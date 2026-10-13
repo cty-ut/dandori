@@ -29,7 +29,7 @@ from dandori.frontend.conjugation import Conjugation
 from dandori.money import Money
 from dandori.plugin.registry import Param, Registry, SettingKind, SettingSpec, VerbError, VerbSpec
 from dandori.runtime import values
-from dandori.stdlib.files import resolve
+from dandori.stdlib.files import check_permission, resolve
 from dandori.stdlib.japan.names import normalize_name
 from dandori.table.interface import BLANK, Table
 from dandori.types import NUMERIC, TableType, Type
@@ -122,7 +122,11 @@ def reconcile(ctx, deposits: Table, invoices: Table):
     due = s.get((NS, "期日"))
     limit = s.get((NS, "手数料"))
     alias_path = s.get((NS, "名義対応"))
-    alias = _load_alias(alias_path, ctx.base_dir) if alias_path else {}
+    alias = {}
+    if alias_path:
+        check_permission(ctx, "読み込み", alias_path)
+        alias = _load_alias(alias_path, ctx.base_dir)
+        ctx.record_read(alias_path, resolve(alias_path, ctx.base_dir), len(alias))
 
     diff_type = Type.MONEY if Type.MONEY in (dep_amount_type, inv_amount_type) else Type.NUMBER
     columns = layout(deposits.type, invoices.type, diff_type)

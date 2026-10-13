@@ -29,13 +29,13 @@ def tasu(ctx, numbers, base=None):
     """100と200を足す → 300　／　100に5を足す → 105　／　期日に30日を足す → 日付"""
     values.check_no_blanks(_as_list(numbers))
     if base is not None:
-        return reduce(lambda a, b: values.add(a, b, ctx.calendar), _as_list(numbers), base)
+        return reduce(lambda a, b: values.add(a, b, ctx.calendar_for), _as_list(numbers), base)
     return reduce(values.add, _as_list(numbers), 0)  # 空的列（如筛选后没有行）合计为 0
 
 
 def hiku(ctx, minuend, subtrahend):
     """10から3を引く → 7"""
-    return values.subtract(minuend, subtrahend, ctx.calendar)
+    return values.subtract(minuend, subtrahend, ctx.calendar_for)
 
 
 def kakeru(ctx, numbers, base=None):

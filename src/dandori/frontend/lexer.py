@@ -47,6 +47,7 @@ _SYMBOLS = {
     "(": TokenKind.LPAREN,
     ")": TokenKind.RPAREN,
     "、": TokenKind.COMMA,
+    ":": TokenKind.COLON,
     "。": TokenKind.PERIOD,
 }
 
@@ -143,6 +144,9 @@ class _Lexer:
         if self._peek() == "円":
             yen = True
             self.pos += 1
+        elif not yen and self.text.startswith("会社営業日", self.pos):
+            unit_kind = "会社営業日"                    # 3会社営業日（语法设计 17.3）
+            self.pos += 5
         elif not yen and self.text.startswith("営業日", self.pos):
             unit_kind = "営業日"                        # 3営業日（语法设计 14.4）
             self.pos += 3
@@ -171,6 +175,8 @@ class _Lexer:
             total = int(total)
         if unit_kind == "営業日":
             value = dates.BusinessDays(total)
+        elif unit_kind == "会社営業日":
+            value = dates.BusinessDays(total, "会社")
         elif unit_kind == "か月":
             value = dates.Months(total)
         elif unit_kind == "年":

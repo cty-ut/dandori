@@ -12,6 +12,7 @@
     9. 逐行处理中的列名指哪张表？有歧义吗？（语法设计 10.3、10.4）
    10. 程序会读取、写出哪些文件？（语法设计 11.6、11.8）——「説明」命令据此回答
    11. 设定文写得对吗？（语法设计 16.2）
+   12. 程序用到的文件在权限声明的范围以内吗？（语法设计 17.1）
 
 能在运行前发现的错误，都在这里发现。通过检查的程序，执行时只可能遇到
 "运行时才知道"的问题（比如除以 0）。
@@ -21,7 +22,7 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
@@ -123,6 +124,7 @@ class Resource:
     explain: str           # 如「「集計.csv」を新規作成します」
     conditional: bool      # 写在もし里：不一定执行
     span: Span
+    permission: str = "読み込み"   # 需要的权限：「読み込み」「書き出し」「上書き」
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,8 @@ class BoundProgram:
     sentences: tuple[BoundStatement, ...]
     resources: tuple[Resource, ...] = ()
     rule_data: tuple[str, ...] = ()       # 使用的规则数据的说明（如祝日表的来源和范围）
+    # 权限声明：[(种类, 路径, 是否文件夹)]；没有写权限声明时为 None（语法设计 17.1）
+    permissions: tuple | None = None
 
 
 def analyze(program: ast.Program, registry: Registry, source: Source, base_dir: Path | None = None
@@ -165,12 +169,50 @@ class _Analyzer:
         self.if_depth = 0                        # もし文中的写出：「説明」中标注"条件によって"
         self.resources: list[Resource] = []
         self.rule_data: list[str] = []           # 使用的规则数据的名字（如「祝日」）
+        self.permissions: list | None = None     # 权限声明
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
+        self._collect_permissions(program.sentences)
         statements = self._statements(program.sentences)
         self._check_resources()
+        self._check_permissions()
         rule_data = tuple(f"{name}：{self.registry.rule_data[name]}" for name in self.rule_data)
-        return BoundProgram(statements, tuple(self.resources), rule_data), self.errors
+        permissions = tuple(self.permissions) if self.permissions is not None else None
+        return BoundProgram(statements, tuple(self.resources), rule_data, permissions), self.errors
+
+    # ---------- 権限宣言（语法设计 17.1） ----------
+
+    def _collect_permissions(self, statements) -> None:
+        """必须写在程序开头，只能有一个"""
+        for index, statement in enumerate(statements):
+            if not isinstance(statement, ast.Permissions):
+                continue
+            if self.permissions is not None:
+                self._error("E3058", statement.span)
+                continue
+            if index != 0:
+                self._error("E3057", statement.span)
+            self.permissions = []
+            for entry in statement.entries:
+                pure = PurePath(entry.path.replace("\\", "/"))
+                if pure.is_absolute() or ".." in pure.parts or ":" in entry.path:
+                    self._error("E3038", entry.span, file=entry.path)
+                    continue
+                self.permissions.append((entry.kind, pure.as_posix(), entry.folder))
+
+    def _check_permissions(self) -> None:
+        """编译时：程序用到的文件超出声明 → 报错（执行时连接器还会再检查一次）"""
+        if self.permissions is None:
+            return
+        from dandori.stdlib.files import allows
+        for resource in self.resources:
+            if not allows(self.permissions, resource.permission, resource.path):
+                self._error("E3059", resource.span, file=resource.path, kind=resource.permission)
+
+    def _require_company_calendar(self, word: str, span: Span) -> None:
+        """公司营业日需要「暦の会社休日は「〜.csv」とする。」（语法设计 17.3）"""
+        if ("暦", "会社休日") not in self.settings:
+            self._error("E3060", span, word=word)
 
     def _use(self, names) -> None:
         """记录程序使用了某种规则数据（「説明」中显示其版本，语法设计 14.2）"""
@@ -203,6 +245,8 @@ class _Analyzer:
                     bound.append(self._each_loop(statement))
                 case ast.Setting():
                     bound.append(self._setting(statement))
+                case ast.Permissions():
+                    pass                      # 已在 _collect_permissions 中处理
                 case ast.Break() | ast.Continue():
                     if self.loop_depth == 0:
                         word = "繰り返しをやめる" if isinstance(statement, ast.Break) else "次に進む"
@@ -373,6 +417,8 @@ class _Analyzer:
     def _check_comparison(self, comparison: ast.Comparison) -> None:
         if isinstance(comparison.right, ast.DayKind):
             # 期日が休日：只能对日付使用（语法设计 14.4）
+            if comparison.right.kind.startswith("会社"):
+                self._require_company_calendar(comparison.right.kind, comparison.right.span)
             actual = self._type_of(comparison.left)
             if actual is not None and actual is not Type.DATE:
                 self._error("E3051", comparison.left.span,
@@ -545,7 +591,7 @@ class _Analyzer:
             self._error("E3042", step.span)
         if isinstance(path, ast.String) and len(self.errors) == errors_before:
             self.resources.append(Resource(spec.effect, path.value, spec.explain.format(path=path.value),
-                                           self.if_depth > 0, path.span))
+                                           self.if_depth > 0, path.span, spec.permission or "読み込み"))
 
         self.last_type = result
         return BoundStep(spec, bound, step.span, result)
@@ -655,8 +701,10 @@ class _Analyzer:
     def _type_of(self, expr: ast.Expr) -> ValueType | None:
         """推断类型。返回 None 表示"已经报过错，类型未知"，调用方就不再追加错误"""
         match expr:
-            case ast.Number(value=dates.BusinessDays()):      # 必须在一般的「数」之前匹配
+            case ast.Number(value=dates.BusinessDays() as days):      # 必须在一般的「数」之前匹配
                 self._use("祝日")
+                if days.calendar == "会社":
+                    self._require_company_calendar("会社営業日", expr.span)
                 return Type.BUSINESS_DAYS
             case ast.Number(value=dates.Months()):
                 return Type.MONTHS

@@ -15,6 +15,8 @@
     比較     ＝ 式 比較記号 式 | 式 が 式 [以上|以下|…]          → _comparison()
     代入文    ＝ 名前 は 名詞句 とする 。                      → _assignment()
     設定文    ＝ 名前 の 名前 は 、? 名詞句 [まで] とする 。      → _setting()
+    権限宣言  ＝ この処理が使うもの : { 種類 : 項目 { 、 項目 } } ここまで 。   → _permissions()
+               種類 ＝ 読み込み | 書き出し | 上書き；項目 ＝ 文字列 [フォルダ]
     手順文    ＝ 手順 { 、? 手順 } [ 、? 名前 とする ] 。       → _sentence()
     手順     ＝ { 引数句 } 動詞                              → _step()
     引数句    ＝ ( 条件名詞 | 名詞句 ) 助詞                      → _arg()
@@ -48,6 +50,7 @@ _COMPARISON_KEYWORDS = {"以上": ">=", "以下": "<=", "未満": "<", "を超�
                         # 日付用（语法设计 13.4）
                         "以降": ">=", "以前": "<=", "より前": "<", "より後": ">"}
 _MONO_KEYWORDS = ("のもの", "もの")
+_DAY_KIND_KEYWORDS = ("が休日", "が営業日", "が会社休日", "が会社営業日")
 _SORT_KEYWORDS = {"大きい順": True, "小さい順": False}   # 是否降序
 
 
@@ -104,11 +107,52 @@ class _Parser:
             return self._each()
         if self._starts_loop():
             return self._loop()
+        if self._is_keyword("この処理が使うもの"):
+            return self._permissions()
         if self._starts_setting():
             return self._setting()
         if self._starts_assignment():
             return self._assignment()
         return self._sentence()
+
+    # ---------- 権限宣言（语法设计 17.1） ----------
+
+    def _permissions(self) -> ast.Permissions:
+        start = self._advance()
+        self._expect_colon()
+        entries = []
+        while self._current().kind is K.KEYWORD and self._current().text in ("読み込み", "書き出し", "上書き"):
+            kind = self._advance().text
+            self._expect_colon()
+            while True:
+                token = self._current()
+                if token.kind is not K.STRING:
+                    self._unexpected(token)
+                    raise _SentenceError
+                self._advance()
+                folder = self._current().kind is K.NAME and self._current().value == "フォルダ"
+                if folder:
+                    self._advance()
+                entries.append(ast.PermissionEntry(kind, token.value, folder,
+                                                   Span(token.span.start, self._previous().span.end)))
+                if self._current().kind is not K.COMMA:
+                    break
+                self._advance()
+        if self._is_keyword("ここまで"):
+            self._advance()
+            self._end_sentence()
+        elif self._current().kind is K.EOF or self._at_block_keyword():
+            self._error("E2016", start.span, opener="この処理が使うもの")
+        else:
+            self._unexpected(self._current())
+            raise _SentenceError
+        return ast.Permissions(tuple(entries), Span(start.span.start, self._previous().span.end))
+
+    def _expect_colon(self) -> None:
+        if self._current().kind is not K.COLON:
+            self._unexpected(self._current())
+            raise _SentenceError
+        self._advance()
 
     # ---------- 設定文 ----------
 
@@ -336,7 +380,7 @@ class _Parser:
             right = self._expr()
             return ast.Comparison(token.value, left, right, Span(left.span.start, right.span.end))
 
-        if token.kind is K.KEYWORD and token.text in ("が休日", "が営業日"):   # 期日が休日（でない）
+        if token.kind is K.KEYWORD and token.text in _DAY_KIND_KEYWORDS:   # 期日が休日（でない）
             self._advance()
             op = "="
             if self._is_keyword("でない"):
@@ -501,7 +545,7 @@ class _Parser:
             i += 1
         first = self.tokens[i]
         if not (first.kind is K.COMPARE or (first.kind is K.PARTICLE and first.text == "が")
-                or (first.kind is K.KEYWORD and first.text in ("が休日", "が営業日"))):
+                or (first.kind is K.KEYWORD and first.text in _DAY_KIND_KEYWORDS)):
             return False
         for token in self.tokens[i:]:
             if token.kind is K.KEYWORD and token.text in _MONO_KEYWORDS:

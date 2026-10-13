@@ -276,7 +276,23 @@ class Setting:
     span: Span
 
 
-Statement = Sentence | Assignment | If | CountLoop | RangeLoop | EachLoop | Break | Continue | Setting
+@dataclass(frozen=True)
+class PermissionEntry:
+    kind: str            # 「読み込み」「書き出し」「上書き」
+    path: str
+    folder: bool         # 「出力」フォルダ
+    span: Span
+
+
+@dataclass(frozen=True)
+class Permissions:
+    """权限声明：この処理が使うもの：…ここまで。（语法设计 17.1）"""
+    entries: tuple[PermissionEntry, ...]
+    span: Span
+
+
+Statement = (Sentence | Assignment | If | CountLoop | RangeLoop | EachLoop | Break | Continue | Setting
+             | Permissions)
 
 
 @dataclass(frozen=True)
@@ -349,6 +365,10 @@ def _describe(node) -> tuple[str, list]:
             return f"範囲繰り返し {var.name}", [start, end, *body]
         case EachLoop(table=table, body=body):
             return "それぞれについて", [table, *body]
+        case Permissions(entries=entries):
+            return "この処理が使うもの", list(entries)
+        case PermissionEntry(kind=kind, path=path, folder=folder):
+            return f"{kind} 「{path}」{'フォルダ' if folder else ''}", []
         case Setting(namespace=namespace, key=key, value=value, up_to=up_to):
             return f"設定 {namespace}の{key}{'（まで）' if up_to else ''}", [value]
         case Break():

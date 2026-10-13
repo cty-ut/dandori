@@ -1,4 +1,4 @@
-"""银行营业日（语法设计 14.2、14.3）
+"""营业日历：银行营业日（语法设计 14.2、14.3）、公司营业日（语法设计 17.3）
 
 祝日不用公式计算，而是使用内閣府公布的祝日表（data/syukujitsu.csv）：
 公式算不出临时祝日（2019 年即位前后的休日、2020/2021 年奥运会调整的祝日），
@@ -21,12 +21,25 @@ from dandori.plugin.registry import VerbError
 _BANK_NEW_YEAR = {(12, 31), (1, 1), (1, 2), (1, 3)}
 
 
-class BankCalendar:
-    def __init__(self, holidays: dict[date, str], source: str):
+class BusinessCalendar:
+    """营业日 ＝ 周一到周五，且不是祝日，且不是额外的休息日。
+
+    银行：额外的休息日是 12/31～1/3（银行法施行令）。
+    公司：额外的休息日是会社休日表中的日子（年末年始各公司不同，由公司自己列出）。
+    """
+
+    def __init__(self, holidays: dict[date, str], source: str, extra: frozenset = frozenset(),
+                 bank_new_year: bool = True):
         self.holidays = holidays
+        self.extra = extra
+        self.bank_new_year = bank_new_year
         self.first_year = min(holidays).year
         self.last_year = max(holidays).year
         self.description = f"{source}（{self.first_year}年〜{self.last_year}年）"
+
+    def with_company_holidays(self, days) -> BusinessCalendar:
+        """公司日历：同样的祝日，加上公司的休息日，不含银行的年末年始"""
+        return BusinessCalendar(self.holidays, "", frozenset(days), bank_new_year=False)
 
     def _check(self, d: date) -> None:
         if not self.first_year <= d.year <= self.last_year:
@@ -35,8 +48,8 @@ class BankCalendar:
 
     def is_business_day(self, d: date) -> bool:
         self._check(d)
-        return (d.weekday() < 5 and d not in self.holidays
-                and (d.month, d.day) not in _BANK_NEW_YEAR)
+        return (d.weekday() < 5 and d not in self.holidays and d not in self.extra
+                and not (self.bank_new_year and (d.month, d.day) in _BANK_NEW_YEAR))
 
     def shift(self, d: date, n: int) -> date:
         """往后（n > 0）或往前（n < 0）数 n 个营业日，不含当天"""
@@ -65,11 +78,14 @@ class BankCalendar:
         return d if self.is_business_day(d) else self.previous(d)
 
 
-def load_bank_calendar() -> BankCalendar:
+BankCalendar = BusinessCalendar          # 以前的名字
+
+
+def load_bank_calendar() -> BusinessCalendar:
     text = resources.files("dandori.stdlib.japan").joinpath("data/syukujitsu.csv").read_text(encoding="utf-8")
     rows = list(csv.reader(text.splitlines()))[1:]
     holidays = {}
     for day, name in rows:
         year, month, dd = (int(x) for x in day.split("/"))
         holidays[date(year, month, dd)] = name
-    return BankCalendar(holidays, "内閣府「国民の祝日」")
+    return BusinessCalendar(holidays, "内閣府「国民の祝日」")

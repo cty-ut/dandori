@@ -45,6 +45,11 @@ class Transaction:
             lines.append(f"「{p.display_name}」を{action}（{p.rows}行）")
         return lines
 
+    def entries(self) -> list[dict]:
+        """执行日志用：写出了哪些文件"""
+        return [{"file": p.display_name, "rows": p.rows,
+                 "action": "上書き" if p.existed else "新規作成"} for p in self._pending]
+
     def commit(self) -> None:
         """先把所有内容写进同一文件夹中的临时文件，全部写好后再逐个替换为正式文件。
 

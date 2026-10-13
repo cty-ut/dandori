@@ -121,11 +121,12 @@ def add_months(d: date, months: int) -> date:
 
 @dataclass(frozen=True)
 class BusinessDays:
-    """3営業日：只能与日付相加减，由营业日日历计算"""
+    """3営業日（银行）、3会社営業日（公司）：只能与日付相加减，由营业日日历计算"""
     count: int
+    calendar: str = "銀行"        # 「銀行」或「会社」
 
     def format(self) -> str:
-        return f"{self.count}営業日"
+        return f"{self.count}{'会社' if self.calendar == '会社' else ''}営業日"
 
 
 @dataclass(frozen=True)

@@ -53,9 +53,17 @@ def main(argv: list[str] | None = None) -> int:
         ctx = Context(base_dir=base_dir, dry_run=args.command == "試し")
         if args.today is not None:
             ctx.today = args.today
-        errors = api.run(source, ctx)
+        # 执行日志：只在执行程序文件时写（「試し」、-c 不写，语法设计 17.2）
+        log_dir = base_dir / "実行記録" if args.command == "実行" and args.code is None else None
+        outcome = api.run_with_log(source, ctx, log_dir=log_dir)
+        errors = outcome.errors
         if not errors:
             _report_files(ctx)
+        if log_dir is not None:
+            if outcome.log_path is not None:
+                print(f"  実行記録：{outcome.log_path.relative_to(base_dir)}", file=sys.stderr)
+            else:
+                print("  ※ 実行記録を書き出せませんでした", file=sys.stderr)
     elif args.command == "説明":
         result = api.compile_source(source, base_dir=base_dir)
         errors = result.errors
@@ -83,6 +91,14 @@ def _explain(result: api.CompileResult) -> None:
         for resource in result.resources:
             note = "（条件によって）" if resource.conditional else ""
             print(f"  {resource.explain}{note}")
+    if result.permissions is not None:
+        print("この処理が使うもの（宣言）：")
+        for kind, path, folder in result.permissions:
+            print(f"  {kind}：「{path}」{'フォルダ' if folder else ''}")
+        for kind, path, folder in result.unused_permissions():
+            print(f"  ※ {kind}：「{path}」{'フォルダ' if folder else ''} は宣言されていますが、使われていません")
+    else:
+        print("※「この処理が使うもの」が書かれていません（正式に運用するときは必要です）")
     if result.rule_data:
         print("使うルールデータ：")
         for line in result.rule_data:

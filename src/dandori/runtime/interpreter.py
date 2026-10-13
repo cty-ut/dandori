@@ -45,10 +45,27 @@ class Context:
     registry: object = None
     # 设定文：(名前空间, 设定名) → 值（语法设计 16.2）。执行到設定文时登记
     settings: dict = field(default_factory=dict)
+    # 权限声明：[(种类, 路径, 是否文件夹)]；None 表示没有声明（语法设计 17.1）
+    permissions: tuple | None = None
+    # 执行中读取的文件：(文件名, 行数, SHA-256)。执行日志用（语法设计 17.2）
+    reads: list = field(default_factory=list)
+
+    def record_read(self, file_name: str, path: Path, rows: int) -> None:
+        import hashlib
+        self.reads.append((file_name, rows, hashlib.sha256(path.read_bytes()).hexdigest()))
 
     @property
     def calendar(self):
         return self.registry.calendar if self.registry is not None else None
+
+    def calendar_for(self, kind: str):
+        """「銀行」→ 银行营业日历；「会社」→ 根据「暦の会社休日」生成的公司日历（只生成一次）"""
+        if kind == "銀行":
+            return self.calendar
+        cache = self.__dict__.setdefault("_calendars", {})
+        if kind not in cache:
+            cache[kind] = self.registry.calendar_factories[kind](self)
+        return cache[kind]
 
 
 class ExecutionError(Exception):
@@ -69,6 +86,7 @@ def execute(program: BoundProgram, ctx: Context) -> None:
     if ctx.registry is None:
         from dandori.plugin.registry import default_registry
         ctx.registry = default_registry()
+    ctx.permissions = program.permissions
     _Executor(ctx).block(program.sentences, last=None)
 
 
@@ -223,8 +241,10 @@ class _Executor:
         if day is BLANK:
             column = condition.left.name if isinstance(condition.left, ast.Name) else "値"
             raise VerbError("E5006", column=column, where=self._origin(condition.left, row))
-        business = self.ctx.calendar.is_business_day(day)
-        result = business if condition.right.kind == "営業日" else not business
+        kind = condition.right.kind
+        calendar = self.ctx.calendar_for("会社" if kind.startswith("会社") else "銀行")
+        business = calendar.is_business_day(day)
+        result = business if kind.endswith("営業日") else not business
         return result if condition.op == "=" else not result
 
     # ---------- 值 ----------
@@ -265,7 +285,7 @@ class _Executor:
                 self._no_blank(b, right, row)
                 try:
                     if op in ("+", "-"):
-                        return _OPERATORS[op](a, b, self.ctx.calendar)   # 日付 ± 営業日数 需要日历
+                        return _OPERATORS[op](a, b, self.ctx.calendar_for)   # 日付 ± 営業日数 需要日历
                     return _OPERATORS[op](a, b)
                 except VerbError as e:
                     raise ExecutionError(Diagnostic.make(e.code, expr.span, **e.params)) from None

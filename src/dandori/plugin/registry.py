@@ -103,6 +103,8 @@ class VerbSpec:
     resource_param: str | None = None
     # 「説明」「試し」中的说明，如「「{path}」を新規作成します」
     explain: str | None = None
+    # 需要的权限：「読み込み」「書き出し」「上書き」（语法设计 17.1）
+    permission: str | None = None
     # 使用的规则数据（如「祝日」，或多个：("消込規則", "表記ゆれ規則")）：「説明」中显示其版本（语法设计 14.2）
     uses: str | tuple[str, ...] | None = None
 
@@ -127,6 +129,8 @@ class Registry:
         self.rule_data: dict[str, str] = {}
         # 营业日日历：「3営業日」「が休日」由它计算。由日本包提供
         self.calendar = None
+        # 其他日历的工厂：「会社」→ 根据执行上下文（设定）生成日历（语法设计 17.3）
+        self.calendar_factories: dict[str, Callable] = {}
         self._settings: dict[tuple[str, str], SettingSpec] = {}
 
     def add_verb(self, spec: VerbSpec) -> None:

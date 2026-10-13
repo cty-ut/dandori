@@ -31,6 +31,19 @@ class CompileResult:
         return self.program.resources
 
     @property
+    def permissions(self):
+        """权限声明：[(种类, 路径, 是否文件夹)]；没有写时为 None"""
+        return self.program.permissions
+
+    def unused_permissions(self) -> list[tuple]:
+        """声明了却没有使用的权限（权限越小越安全）"""
+        if self.permissions is None:
+            return []
+        from dandori.stdlib.files import allows
+        return [entry for entry in self.permissions
+                if not any(allows([entry], r.permission, r.path) for r in self.resources)]
+
+    @property
     def rule_data(self) -> tuple[str, ...]:
         """程序使用的规则数据（祝日表等）及其来源和范围（「説明」）"""
         return self.program.rule_data
@@ -50,24 +63,50 @@ def compile_source(source: Source, registry: Registry | None = None,
     return CompileResult(tree, program, errors)
 
 
-def run(source: Source, ctx: Context | None = None, registry: Registry | None = None
-        ) -> list[Diagnostic]:
+@dataclass
+class RunResult:
+    errors: list[Diagnostic]
+    log_path: Path | None = None       # 写出的执行日志（语法设计 17.2）
+
+
+def run(source: Source, ctx: Context | None = None, registry: Registry | None = None) -> list[Diagnostic]:
     """编译并执行。有编译错误时一行也不执行，返回所有错误
 
     写出的内容在程序全部成功后才写入（ctx.transaction.commit）；中途出错或试运行时什么都不写。
     """
+    return run_with_log(source, ctx, registry).errors
+
+
+def run_with_log(source: Source, ctx: Context | None = None, registry: Registry | None = None,
+                 log_dir: Path | None = None) -> RunResult:
+    """与 run 相同；给出 log_dir 时，执行后在那里写执行日志（试运行不写）"""
+    import time
+    from dandori.runtime.log import ExecutionLog
+
     ctx = ctx or Context()
     registry = registry or ctx.registry or default_registry()
     ctx.registry = registry
+    log = ExecutionLog(source)
+    started = time.monotonic()
+
     result = compile_source(source, registry, ctx.base_dir)
-    if result.errors:
-        return result.errors
-    try:
-        execute(result.program, ctx)
-        if not ctx.dry_run:
-            ctx.transaction.commit()
-    except ExecutionError as e:
-        return [e.diagnostic]
-    except VerbError as e:      # 写入文件时失败
-        return [Diagnostic.make(e.code, Span(0, 0), **e.params)]
-    return []
+    errors, executed = result.errors, False
+    if not errors:
+        executed = True
+        try:
+            execute(result.program, ctx)
+            if not ctx.dry_run:
+                ctx.transaction.commit()
+        except ExecutionError as e:
+            errors = [e.diagnostic]
+        except VerbError as e:      # 写入文件时失败
+            errors = [Diagnostic.make(e.code, Span(0, 0), **e.params)]
+
+    log_path = None
+    if log_dir is not None and not ctx.dry_run:
+        record = log.finish(ctx, result.rule_data, errors, time.monotonic() - started, executed)
+        try:
+            log_path = log.write(record, log_dir)
+        except OSError:
+            log_path = None             # 日志写入失败只给出警告，不影响执行结果（由调用方提示）
+    return RunResult(errors, log_path)
