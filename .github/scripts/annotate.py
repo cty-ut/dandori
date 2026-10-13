@@ -7,6 +7,7 @@ GitHub 每个步骤最多显示 10 条错误注释。
 import sys
 import xml.etree.ElementTree as ET
 
+sys.stdout.reconfigure(encoding="utf-8")       # Windows 的默认编码（cp1252）写不了日文
 root = ET.parse(sys.argv[1]).getroot()
 for case in root.iter("testcase"):
     for problem in [*case.iter("failure"), *case.iter("error")]:
