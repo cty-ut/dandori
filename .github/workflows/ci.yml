@@ -1,0 +1,71 @@
+# CI：每次 push、pull request 时运行
+#   lint   语法错误、未使用的导入等（ruff）
+#   test   三种操作系统 × 支持的 Python 版本；覆盖率低于 90% 时失败
+#   build  打包，在干净的环境中安装，确认数据文件（祝日表、AI 的说明书）也打进了包里
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install ruff
+      - run: ruff check src tests
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          # 日本的公司大多用 Windows：编码（Shift_JIS、cp932）、路径、文件锁都要在 Windows 上确认
+          - os: windows-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.14"
+          - os: macos-latest
+            python: "3.14"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev,ai]"
+      - run: pytest -q --cov --cov-report=term --cov-fail-under=90
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install build
+      - run: python -m build
+      - name: 在干净的环境中安装并试运行
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/dandori 実行 -c "2026年10月25日の前営業日を表示する。"
+          /tmp/clean/bin/dandori 説明 -c "実行の予定は、「毎月第3営業日 9時」とする。"
+          /tmp/clean/bin/python -c "from dandori_ai.reference import system_prompt; assert '段取り' in system_prompt()"
+          /tmp/clean/bin/dandori-platform 一覧 --場所 /tmp/ws
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

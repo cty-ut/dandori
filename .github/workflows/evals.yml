@@ -1,0 +1,46 @@
+# AI 评测：调用真实的模型 API，要花钱，所以只能手动运行（Actions 页面 → AI 評価 → Run workflow）
+# 需要在仓库的 Settings → Secrets 中设置对应的密钥（DEEPSEEK_API_KEY 等）
+name: AI 評価
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 提供元
+        type: choice
+        options: [deepseek, claude, openai]
+        default: deepseek
+      model:
+        description: モデル（空欄なら既定のモデル）
+        required: false
+      only:
+        description: 名前にこの文字を含むケースだけ（空欄ならすべて）
+        required: false
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install -e ".[ai]"
+      - name: 評価
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROVIDER: ${{ inputs.provider }}
+          MODEL: ${{ inputs.model }}
+          ONLY: ${{ inputs.only }}
+        run: |
+          args=(評価 --提供元 "$PROVIDER")
+          [ -n "$MODEL" ] && args+=(--モデル "$MODEL")
+          [ -n "$ONLY" ] && args+=(--だけ "$ONLY")
+          dandori-ai "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: evals/結果/

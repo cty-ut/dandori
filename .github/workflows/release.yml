@@ -1,0 +1,31 @@
+# CD：推送 v* 标签（如 v0.1.0）时，测试 → 打包 → 创建 GitHub Release 并附上安装包
+#   git tag v0.1.0 && git push origin v0.1.0
+# 标签必须与 pyproject.toml 的 version 一致。发布到 PyPI 以后再做（需要先确定包名）
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: 标签与版本号一致
+        run: |
+          version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          test "v$version" = "${GITHUB_REF_NAME}" || { echo "标签 ${GITHUB_REF_NAME} 与 pyproject.toml 的版本 $version 不一致"; exit 1; }
+      - run: pip install -e ".[dev,ai]" build
+      - run: pytest -q
+      - run: python -m build
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/* --title "段取り ${GITHUB_REF_NAME}" --generate-notes
