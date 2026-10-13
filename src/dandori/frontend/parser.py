@@ -14,6 +14,7 @@
     条件     ＝ 比較 { かつ 比較 } | 比較 { または 比較 }        → _condition()
     比較     ＝ 式 比較記号 式 | 式 が 式 [以上|以下|…]          → _comparison()
     代入文    ＝ 名前 は 名詞句 とする 。                      → _assignment()
+    設定文    ＝ 名前 の 名前 は 、? 名詞句 [まで] とする 。      → _setting()
     手順文    ＝ 手順 { 、? 手順 } [ 、? 名前 とする ] 。       → _sentence()
     手順     ＝ { 引数句 } 動詞                              → _step()
     引数句    ＝ ( 条件名詞 | 名詞句 ) 助詞                      → _arg()
@@ -103,9 +104,44 @@ class _Parser:
             return self._each()
         if self._starts_loop():
             return self._loop()
+        if self._starts_setting():
+            return self._setting()
         if self._starts_assignment():
             return self._assignment()
         return self._sentence()
+
+    # ---------- 設定文 ----------
+
+    def _starts_setting(self) -> bool:
+        """以「名前 の 名前 は」开头的是設定文：消込の手数料は、…とする。"""
+        t = self.tokens[self.pos:self.pos + 4]
+        return (len(t) == 4 and t[0].kind is K.NAME and t[1].kind is K.PARTICLE and t[1].text == "の"
+                and t[2].kind is K.NAME and t[3].kind is K.PARTICLE and t[3].text == "は")
+
+    def _setting(self) -> ast.Setting:
+        """設定文 ＝ 名前 の 名前 は 、? 名詞句 [まで] とする 。"""
+        namespace = self._advance()
+        self._advance()                      # の
+        key = self._advance()
+        self._advance()                      # は
+        if self._current().kind is K.COMMA:
+            self._advance()
+        label = f"{namespace.value}の{key.value}"
+        if not self._starts_value(self._current()):
+            self._error("E2010", key.span, name=label)
+            raise _SentenceError
+        value = self._noun_phrase()
+        up_to = False
+        if self._current().kind is K.PARTICLE and self._current().text == "まで":
+            self._advance()
+            up_to = True
+        if not self._is_keyword("とする"):
+            self._error("E2010", Span(namespace.span.start, value.span.end), name=label)
+            raise _SentenceError
+        self._advance()
+        self._end_sentence()
+        return ast.Setting(namespace.value, key.value, value, up_to, key.span,
+                           Span(namespace.span.start, self._previous().span.end))
 
     # ---------- 繰り返し文 ----------
 

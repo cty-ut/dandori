@@ -265,7 +265,18 @@ class Continue:
     span: Span
 
 
-Statement = Sentence | Assignment | If | CountLoop | RangeLoop | EachLoop | Break | Continue
+@dataclass(frozen=True)
+class Setting:
+    """设定文：消込の手数料は、880円までとする。（语法设计 16.2）"""
+    namespace: str
+    key: str
+    value: Expr
+    up_to: bool          # 值后面有「まで」
+    key_span: Span
+    span: Span
+
+
+Statement = Sentence | Assignment | If | CountLoop | RangeLoop | EachLoop | Break | Continue | Setting
 
 
 @dataclass(frozen=True)
@@ -338,6 +349,8 @@ def _describe(node) -> tuple[str, list]:
             return f"範囲繰り返し {var.name}", [start, end, *body]
         case EachLoop(table=table, body=body):
             return "それぞれについて", [table, *body]
+        case Setting(namespace=namespace, key=key, value=value, up_to=up_to):
+            return f"設定 {namespace}の{key}{'（まで）' if up_to else ''}", [value]
         case Break():
             return "繰り返しをやめる", []
         case Continue():

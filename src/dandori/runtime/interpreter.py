@@ -19,7 +19,7 @@ from dandori import dates
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundEachLoop, BoundIf,
-                                      BoundProgram, BoundRangeLoop, BoundStatement)
+                                      BoundProgram, BoundRangeLoop, BoundSetting, BoundStatement)
 from dandori.plugin.registry import ParamKind, VerbError
 from dandori.runtime import values
 from dandori.runtime.transaction import Transaction
@@ -43,6 +43,8 @@ class Context:
     today: date = field(default_factory=dates.today_jst)
     # 注册表：日付的属性、营业日日历都由它提供（api.run 设置；直接调用 execute 时使用标准的注册表）
     registry: object = None
+    # 设定文：(名前空间, 设定名) → 值（语法设计 16.2）。执行到設定文时登记
+    settings: dict = field(default_factory=dict)
 
     @property
     def calendar(self):
@@ -86,6 +88,10 @@ class _Executor:
         if isinstance(statement, BoundAssignment):
             self.env[statement.name] = self.evaluate(statement.value, last)
             return None                          # 赋值不产生结果
+
+        if isinstance(statement, BoundSetting):
+            self.ctx.settings[(statement.namespace, statement.key)] = statement.value
+            return None
 
         if isinstance(statement, ast.Break):
             raise _Break

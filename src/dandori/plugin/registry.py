@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Callable
@@ -61,6 +61,27 @@ class VerbError(Exception):
 class InferContext:
     """推断类型时可以用到的信息（编译时）"""
     base_dir: Path                   # 程序文件所在的目录：相对路径以它为准
+    # 到目前为止的设定文：(名前空间, 设定名) → 值（语法设计 16.2）
+    settings: dict = field(default_factory=dict)
+
+
+class SettingKind(Enum):
+    """设定的值的写法（语法设计 16.2）"""
+
+    COLUMN_PAIR = "「入金の振込依頼人と請求のフリガナ」"   # 两个列 → ((列名, 类型), (列名, 类型))
+    COLUMN = "「請求の支払期日」"                           # 一个列 → (列名, 类型)
+    LIMIT = "「880円まで」"                                 # 上限 → 数或金額
+    FILE = "「「名義対応.csv」」"                           # 文件名 → 文字列
+
+
+@dataclass(frozen=True)
+class SettingSpec:
+    """设定文：消込の手数料は、880円までとする。由插件登记，语言核心不知道它的含义"""
+    namespace: str                   # 「消込」
+    key: str                         # 「手数料」
+    kind: SettingKind
+    # FILE 类的设定：编译时检查文件（读取、格式），出错时抛出 VerbError
+    check: Callable | None = None
 
 
 @dataclass(frozen=True)
@@ -82,8 +103,8 @@ class VerbSpec:
     resource_param: str | None = None
     # 「説明」「試し」中的说明，如「「{path}」を新規作成します」
     explain: str | None = None
-    # 使用的规则数据（如「祝日」）：「説明」中显示其版本（语法设计 14.2）
-    uses: str | None = None
+    # 使用的规则数据（如「祝日」，或多个：("消込規則", "表記ゆれ規則")）：「説明」中显示其版本（语法设计 14.2）
+    uses: str | tuple[str, ...] | None = None
 
     def param_for(self, particle: str) -> Param | None:
         return next((p for p in self.params if p.particle == particle), None)
@@ -106,6 +127,7 @@ class Registry:
         self.rule_data: dict[str, str] = {}
         # 营业日日历：「3営業日」「が休日」由它计算。由日本包提供
         self.calendar = None
+        self._settings: dict[tuple[str, str], SettingSpec] = {}
 
     def add_verb(self, spec: VerbSpec) -> None:
         if spec.id in self._verbs:
@@ -113,6 +135,18 @@ class Registry:
         if len({p.particle for p in spec.params}) != len(spec.params):
             raise ValueError(f"同じ助詞の引数が二つあります：{spec.id}")
         self._verbs[spec.id] = spec
+
+    def add_setting(self, spec: SettingSpec) -> None:
+        self._settings[(spec.namespace, spec.key)] = spec
+
+    def setting(self, namespace: str, key: str) -> SettingSpec | None:
+        return self._settings.get((namespace, key))
+
+    def setting_keys(self, namespace: str) -> list[str]:
+        return [key for ns, key in self._settings if ns == namespace]
+
+    def has_setting_namespace(self, namespace: str) -> bool:
+        return any(ns == namespace for ns, _ in self._settings)
 
     def add_date_property(self, prop: DateProperty) -> None:
         if prop.name in self._date_properties:

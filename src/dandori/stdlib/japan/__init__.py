@@ -8,7 +8,7 @@
 from dandori.frontend import ast
 from dandori.frontend.conjugation import Conjugation
 from dandori.plugin.registry import DateProperty, Param, Registry, VerbError, VerbSpec
-from dandori.stdlib.japan import names, tax
+from dandori.stdlib.japan import names, reconcile, tax
 from dandori.table.interface import BLANK
 from dandori.stdlib.japan.calendar import load_bank_calendar
 from dandori.stdlib.japan.payment import parse_terms
@@ -62,6 +62,8 @@ def register(registry: Registry) -> None:
         returns=None, impl=totonoeru, infer=lambda args, types, ctx: types.get("text"),
         uses="表記ゆれ規則",
     ))
+
+    reconcile.register(registry)
 
     registry.rule_data["消費税率"] = tax.DESCRIPTION
     registry.add_date_property(DateProperty("標準税率", tax.standard_rate, Type.NUMBER, uses="消費税率"))

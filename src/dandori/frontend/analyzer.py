@@ -11,6 +11,7 @@
     8. 表有没有这一列？（语法设计 8.4）——「読み込む」在这里就读取文件，确定列定义
     9. 逐行处理中的列名指哪张表？有歧义吗？（语法设计 10.3、10.4）
    10. 程序会读取、写出哪些文件？（语法设计 11.6、11.8）——「説明」命令据此回答
+   11. 设定文写得对吗？（语法设计 16.2）
 
 能在运行前发现的错误，都在这里发现。通过检查的程序，执行时只可能遇到
 "运行时才知道"的问题（比如除以 0）。
@@ -25,7 +26,8 @@ from pathlib import Path
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.source import Source, Span
-from dandori.plugin.registry import Effect, InferContext, Param, ParamKind, Registry, VerbError, VerbSpec
+from dandori.plugin.registry import (Effect, InferContext, Param, ParamKind, Registry, SettingKind, VerbError,
+                                     VerbSpec)
 from dandori import dates
 from dandori.money import Money
 from dandori.types import ELEMENT_OF, LIST_OF, NUMERIC, NUMERIC_LISTS, TableType, Type, ValueType
@@ -101,8 +103,16 @@ class BoundEachLoop:
     span: Span
 
 
+@dataclass(frozen=True)
+class BoundSetting:
+    """设定文：值在编译时就确定了（列名、上限、文件名），执行时登记到 ctx.settings"""
+    namespace: str
+    key: str
+    value: object
+
+
 BoundStatement = (BoundSentence | BoundAssignment | BoundIf | BoundCountLoop | BoundRangeLoop
-                  | BoundEachLoop | ast.Break | ast.Continue)
+                  | BoundEachLoop | BoundSetting | ast.Break | ast.Continue)
 
 
 @dataclass(frozen=True)
@@ -133,7 +143,8 @@ class _Analyzer:
     def __init__(self, registry: Registry, source: Source, base_dir: Path):
         self.registry = registry
         self.source = source
-        self.infer_context = InferContext(base_dir)
+        self.settings: dict[tuple[str, str], object] = {}
+        self.infer_context = InferContext(base_dir, self.settings)
         self.errors: list[Diagnostic] = []
         # 最近一个手順的结果类型。None 表示"没有结果"：
         # 程序刚开始，或者上一步是「表示する」这种不产生结果的动词
@@ -149,6 +160,8 @@ class _Analyzer:
         # 在这些地方，名字被理解为表的列（语法设计 9.4、10.3）。元素是 (表的类型, 给人看的表名)
         self.scopes: list[tuple[TableType, str]] = []
         self.loop_depth = 0                      # 「繰り返しをやめる」「次に進む」只能在循环中使用
+        # 对类型未知的表（之前已经报过错）逐行处理时：循环中不认识的名字不再报错，避免连锁错误
+        self.unknown_scope_depth = 0
         self.if_depth = 0                        # もし文中的写出：「説明」中标注"条件によって"
         self.resources: list[Resource] = []
         self.rule_data: list[str] = []           # 使用的规则数据的名字（如「祝日」）
@@ -159,10 +172,11 @@ class _Analyzer:
         rule_data = tuple(f"{name}：{self.registry.rule_data[name]}" for name in self.rule_data)
         return BoundProgram(statements, tuple(self.resources), rule_data), self.errors
 
-    def _use(self, name: str | None) -> None:
+    def _use(self, names) -> None:
         """记录程序使用了某种规则数据（「説明」中显示其版本，语法设计 14.2）"""
-        if name is not None and name not in self.rule_data:
-            self.rule_data.append(name)
+        for name in (names,) if isinstance(names, str) else (names or ()):
+            if name not in self.rule_data:
+                self.rule_data.append(name)
 
     def _check_resources(self) -> None:
         """同一个文件写两次（E3040）。写出后再读取（E3041）在 _step 中、尝试读取之前检查"""
@@ -187,6 +201,8 @@ class _Analyzer:
                     bound.append(self._range_loop(statement))
                 case ast.EachLoop():
                     bound.append(self._each_loop(statement))
+                case ast.Setting():
+                    bound.append(self._setting(statement))
                 case ast.Break() | ast.Continue():
                     if self.loop_depth == 0:
                         word = "繰り返しをやめる" if isinstance(statement, ast.Break) else "次に進む"
@@ -231,6 +247,58 @@ class _Analyzer:
         self.last_type = None                        # 事先不知道走了哪个分支
         return BoundIf(tuple(branches), node.span)
 
+    # ---------- 設定文（语法设计 16.2） ----------
+
+    def _setting(self, node: ast.Setting) -> BoundSetting:
+        spec = self.registry.setting(node.namespace, node.key)
+        if spec is None:
+            keys = "、".join(self.registry.setting_keys(node.namespace)) or "設定はありません"
+            self._error("E2022", node.key_span, namespace=node.namespace, key=node.key, keys=keys)
+            return BoundSetting(node.namespace, node.key, None)
+        if self.if_depth or self.loop_depth:
+            self._error("E3054", node.span)
+
+        errors_before = len(self.errors)
+        value = self._setting_value(spec.kind, node)
+        if value is None and len(self.errors) == errors_before:
+            self._error("E3055", node.value.span, namespace=node.namespace, key=node.key,
+                        example=spec.kind.value)
+        elif value is not None and spec.check is not None:
+            try:
+                spec.check(value, self.infer_context)
+            except VerbError as e:
+                self._error(e.code, node.value.span, **e.params)
+        if value is not None and spec.kind is SettingKind.FILE:
+            self.resources.append(Resource(Effect.READ, value, f"「{value}」を読み込みます", False, node.value.span))
+        self.settings[(node.namespace, node.key)] = value
+        return BoundSetting(node.namespace, node.key, value)
+
+    def _setting_value(self, kind: SettingKind, node: ast.Setting):
+        """按设定的种类检查值的写法。写法不对时返回 None"""
+        value = node.value
+        if kind is SettingKind.COLUMN_PAIR:
+            if node.up_to or not (isinstance(value, ast.ListExpr) and len(value.items) == 2
+                                  and all(isinstance(i, ast.ColumnRef) for i in value.items)):
+                return None
+            types = [self._type_of(item) for item in value.items]
+            if None in types:
+                return None
+            return tuple((item.column, ELEMENT_OF.get(t, t)) for item, t in zip(value.items, types))
+        if kind is SettingKind.COLUMN:
+            if node.up_to or not isinstance(value, ast.ColumnRef):
+                return None
+            t = self._type_of(value)
+            return None if t is None else (value.column, ELEMENT_OF.get(t, t))
+        if kind is SettingKind.LIMIT:
+            if not node.up_to or not isinstance(value, ast.Number):
+                return None
+            return value.value
+        if kind is SettingKind.FILE:
+            if node.up_to or not isinstance(value, ast.String):
+                return None
+            return value.value
+        return None
+
     # ---------- 繰り返し文 ----------
 
     def _count_loop(self, node: ast.CountLoop) -> BoundCountLoop:
@@ -264,9 +332,13 @@ class _Analyzer:
             table = None
         if table is not None:
             self.scopes.append((table, self._table_label(node.table)))
+        else:
+            self.unknown_scope_depth += 1
         body = self._loop_body(node.body)
         if table is not None:
             self.scopes.pop()
+        else:
+            self.unknown_scope_depth -= 1
         return BoundEachLoop(node.table, body, node.span)
 
     def _loop_body(self, statements, loop_var: str | None = None) -> tuple[BoundStatement, ...]:
@@ -610,7 +682,8 @@ class _Analyzer:
                 return self._scoped_column(expr)
             case ast.Name(name=name):
                 if name not in self.symbols:
-                    self._error("E3010", expr.span, name=name)
+                    if self.unknown_scope_depth == 0:
+                        self._error("E3010", expr.span, name=name)
                     return None
                 if name not in self.defined:
                     if name in self.ended_loop_vars:
