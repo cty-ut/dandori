@@ -260,3 +260,24 @@ def test_condition_keywords(lexicon, code, expected):
 def test_nara_hint(lexicon):
     _, errors = lex("もし合計が0なら、ここまで。", lexicon)
     assert [e.code for e in errors] == ["E1009"]
+
+
+# ---------- 阶段 2-3：循环 ----------
+
+@pytest.mark.parametrize("code, expected", [
+    ("3回繰り返して", [(K.NUMBER, "3"), (K.KEYWORD, "回繰り返して")]),
+    ("件数回繰り返して", [(K.NAME, "件数"), (K.KEYWORD, "回繰り返して")]),
+    ("回数と回収と繰越金", [(K.NAME, "回数"), (K.PARTICLE, "と"), (K.NAME, "回収"),
+                          (K.PARTICLE, "と"), (K.NAME, "繰越金")]),          # 不被切坏
+    ("1から12まで", [(K.NUMBER, "1"), (K.PARTICLE, "から"), (K.NUMBER, "12"), (K.PARTICLE, "まで")]),
+    ("ここまで", [(K.KEYWORD, "ここまで")]),                                    # 不是 ここ + まで
+])
+def test_loop_tokens(lexicon, code, expected):
+    tokens, errors = lex(code, lexicon)
+    assert errors == []
+    assert kinds_and_texts(tokens) == expected
+
+
+def test_kurikaesu_hint(lexicon):
+    _, errors = lex("3回繰り返す。", lexicon)
+    assert [e.code for e in errors] == ["E1010"]

@@ -177,6 +177,9 @@ class _Lexer:
         if word.startswith("なら"):
             # 「合計が0なら、」：只认「ならば」（语法设计 6.4）
             self.errors.append(Diagnostic.make("E1009", span))
+        elif "繰り返" in word:
+            # 「3回繰り返す。」：只认「繰り返して、」（语法设计 7.3）
+            self.errors.append(Diagnostic.make("E1010", span))
         elif looks_like_name:
             self.errors.append(Diagnostic.make("E1004", span, word=word, hint=_name_hint(word)))
         else:

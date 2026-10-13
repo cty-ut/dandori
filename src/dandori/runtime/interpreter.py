@@ -4,6 +4,7 @@
 做法很朴素：一句一句、一个手順一个手順地做，
 每一步先把参数的值算出来，再调用动词的实现函数。
 もし文就是先依次检查条件，执行第一个成立的分支。
+繰り返し文在开始时把次数或范围算好，之后不再改变，所以一定会结束。
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ from typing import Callable
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
-from dandori.frontend.analyzer import BoundAssignment, BoundIf, BoundProgram, BoundStatement
+from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundIf, BoundProgram,
+                                      BoundRangeLoop, BoundStatement)
 from dandori.plugin.registry import VerbError
 from dandori.runtime import values
 
@@ -54,6 +56,26 @@ class _Executor:
             self.env[statement.name] = self.evaluate(statement.value, last)
             return None                          # 赋值不产生结果
 
+        if isinstance(statement, BoundCountLoop):
+            count = self.evaluate(statement.count, last)
+            if not isinstance(count, int) or count < 0:
+                self._fail("E5002", statement.count.span, value=values.format_value(count))
+            for _ in range(count):
+                self.block(statement.body, last=None)
+            return None
+
+        if isinstance(statement, BoundRangeLoop):
+            first = self.evaluate(statement.start, last)
+            final = self.evaluate(statement.end, last)
+            for expr, value in ((statement.start, first), (statement.end, final)):
+                if not isinstance(value, int):
+                    self._fail("E5003", expr.span, value=values.format_value(value))
+            for i in range(first, final + 1):          # 两端都包含；开始 > 结束时执行 0 次
+                self.env[statement.var] = i
+                self.block(statement.body, last=None)
+            self.env.pop(statement.var, None)          # 循环变量只在循环内有效
+            return None
+
         if isinstance(statement, BoundIf):
             for branch in statement.branches:
                 if branch.condition is None or self.test(branch.condition, last):
@@ -71,6 +93,10 @@ class _Executor:
             self.env[statement.bind] = last
             return None
         return last
+
+    @staticmethod
+    def _fail(code: str, span, **params):
+        raise ExecutionError(Diagnostic.make(code, span, **params))
 
     # ---------- 条件 ----------
 

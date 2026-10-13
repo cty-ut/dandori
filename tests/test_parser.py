@@ -301,3 +301,75 @@ def test_error_inside_branch_keeps_if_structure(run):
     program, errors = run("もし合計が1ならば、\n100表示する。\nここまで。\n2を表示する。")
     assert [e.code for e in errors] == ["E2007"]
     assert len(program.sentences) == 2
+
+
+# ---------- 阶段 2-3：循环 ----------
+
+def test_count_loop(run):
+    program, errors = run("3回繰り返して、\n「a」を表示する。\nここまで。")
+    assert errors == []
+    (loop,) = program.sentences
+    assert isinstance(loop, ast.CountLoop)
+    assert loop.count.value == 3
+    assert len(loop.body) == 1
+
+
+@pytest.mark.parametrize("header", [
+    "月を1から12まで繰り返して",
+    "1から12まで月を繰り返して",          # 助词顺序自由
+    "月を1から12まで繰り返して、",
+])
+def test_range_loop(run, header):
+    program, errors = run(f"{header}\n月を表示する。\nここまで。")
+    assert errors == []
+    (loop,) = program.sentences
+    assert isinstance(loop, ast.RangeLoop)
+    assert (loop.var.name, loop.start.value, loop.end.value) == ("月", 1, 12)
+
+
+def test_loop_count_expression(run):
+    program, errors = run("(件数+1)回繰り返して、ここまで。")
+    assert errors == []
+    assert program.sentences[0].count.op == "+"
+
+
+def test_loop_and_if_nested(run):
+    program, errors = run("""
+        月を1から3まで繰り返して、
+          もし月が2ならば、
+            2回繰り返して、
+              月を表示する。
+            ここまで。
+          ここまで。
+        ここまで。
+    """)
+    assert errors == []
+    inner_if = program.sentences[0].body[0]
+    assert isinstance(inner_if.branches[0].body[0], ast.CountLoop)
+
+
+def test_statement_with_kurikaeshite_after_verb_is_not_a_loop(run):
+    # 句首往后看时先遇到动词，就不是繰り返し文
+    _, errors = run("1を表示する。")
+    assert errors == []
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("3回繰り返して、1を表示する。", ["E2016"]),
+    ("月を3回繰り返して、ここまで。", ["E2017"]),
+    ("1から3まで繰り返して、ここまで。", ["E2017"]),             # 缺少 を
+    ("月を1から繰り返して、ここまで。", ["E2017"]),              # 缺少 まで
+    ("1を1から3まで繰り返して、ここまで。", ["E2017"]),          # を 的不是名字
+    ("月に1から3まで繰り返して、ここまで。", ["E2017"]),
+    ("3回繰り返す。", ["E1010"]),                                # 不连锁报错
+])
+def test_loop_errors(lexicon, code, expected):
+    source = Source(code)
+    tokens, lex_errors = tokenize(source, lexicon)
+    _, parse_errors = parse(tokens, source)
+    assert [e.code for e in lex_errors + parse_errors] == expected
+
+
+def test_stray_kokomade_mentions_loop(run):
+    _, errors = run("ここまで。")
+    assert "「もし」や「繰り返して」" in errors[0].message

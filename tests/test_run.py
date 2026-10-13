@@ -172,3 +172,56 @@ def test_conditions_example_file():
     output, errors = run_code(code)
     assert errors == []
     assert output == ["中口", "少数の大きな取引", "通常の承認", "36協定の上限を超えています"]
+
+
+# ---------- 阶段 2-3：循环 ----------
+
+@pytest.mark.parametrize("code, expected", [
+    ("3回繰り返して、「a」を表示する。ここまで。", ["a", "a", "a"]),
+    ("0回繰り返して、「a」を表示する。ここまで。", []),
+    ("月を1から3まで繰り返して、月を表示する。ここまで。", ["1", "2", "3"]),         # 两端都包含
+    ("月を10から1まで繰り返して、月を表示する。ここまで。", []),                       # 开始 > 结束：0 次
+    ("月を3から3まで繰り返して、月を表示する。ここまで。", ["3"]),
+    ("月を-1から1まで繰り返して、月を表示する。ここまで。", ["-1", "0", "1"]),
+])
+def test_loop_outputs(code, expected):
+    output, errors = run_code(code)
+    assert errors == []
+    assert output == expected
+
+
+def test_range_is_evaluated_once():
+    # 循环中修改范围用的变量，不影响次数：保证一定结束
+    output, errors = run_code("""
+        上限は3とする。
+        月を1から上限まで繰り返して、
+          上限に1を足して、上限とする。
+          月を表示する。
+        ここまで。
+        上限を表示する。
+    """)
+    assert errors == []
+    assert output == ["1", "2", "3", "6"]
+
+
+def test_integral_decimal_is_accepted():
+    output, errors = run_code("1.5×2回繰り返して、「a」を表示する。ここまで。")
+    assert errors == []
+    assert output == ["a", "a", "a"]
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("0-1回繰り返して、ここまで。", "E5002"),
+    ("1.5回繰り返して、ここまで。", "E5002"),
+    ("月を1から2.5まで繰り返して、ここまで。", "E5003"),
+])
+def test_loop_runtime_errors(code, expected):
+    _, errors = run_code(code)
+    assert errors == [expected]
+
+
+def test_loops_example_file():
+    code = (EXAMPLES / "繰り返し.dandori").read_text(encoding="utf-8")
+    output, errors = run_code(code)
+    assert errors == []
+    assert output == ["おはよう"] * 3 + ["78", "40", "1", "2", "3", "2", "4", "6", "3", "6", "9"]

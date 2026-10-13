@@ -166,7 +166,27 @@ class If:
     span: Span
 
 
-Statement = Sentence | Assignment | If
+# ---------- 循环（语法设计第 7 节） ----------
+
+@dataclass(frozen=True)
+class CountLoop:
+    """3回繰り返して、…ここまで。"""
+    count: Expr
+    body: tuple[Statement, ...]
+    span: Span
+
+
+@dataclass(frozen=True)
+class RangeLoop:
+    """月を1から12まで繰り返して、…ここまで。（两端都包含）"""
+    var: NameRef
+    start: Expr
+    end: Expr
+    body: tuple[Statement, ...]
+    span: Span
+
+
+Statement = Sentence | Assignment | If | CountLoop | RangeLoop
 
 
 @dataclass(frozen=True)
@@ -222,6 +242,10 @@ def _describe(node) -> tuple[str, list]:
             return "そうでなければ", list(body)
         case Branch(condition=condition, body=body):
             return "ならば", [condition, *body]
+        case CountLoop(count=count, body=body):
+            return "回数繰り返し", [count, *body]
+        case RangeLoop(var=var, start=start, end=end, body=body):
+            return f"範囲繰り返し {var.name}", [start, end, *body]
         case Logical(op=op, items=items):
             return op, list(items)
         case Comparison(op=op, left=left, right=right):

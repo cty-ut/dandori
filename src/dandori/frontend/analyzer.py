@@ -7,6 +7,7 @@
     4. 类型对不对？                     → 例如不能把文字列拿去相加
     5. 名字定义过吗？类型有没有被改变？   → 符号表（语法设计 5.5）
     6. もし文之后，变量是不是一定有值？   → 确定赋值（语法设计 6.6）
+    7. 循环变量有没有被改动、被用到循环外？（语法设计 7.4）
 
 能在运行前发现的错误，都在这里发现。通过检查的程序，执行时只可能遇到
 "运行时才知道"的问题（比如除以 0）。
@@ -59,7 +60,23 @@ class BoundIf:
     span: Span
 
 
-BoundStatement = BoundSentence | BoundAssignment | BoundIf
+@dataclass(frozen=True)
+class BoundCountLoop:
+    count: ast.Expr
+    body: tuple[BoundStatement, ...]
+    span: Span
+
+
+@dataclass(frozen=True)
+class BoundRangeLoop:
+    var: str
+    start: ast.Expr
+    end: ast.Expr
+    body: tuple[BoundStatement, ...]
+    span: Span
+
+
+BoundStatement = BoundSentence | BoundAssignment | BoundIf | BoundCountLoop | BoundRangeLoop
 
 
 @dataclass(frozen=True)
@@ -87,6 +104,8 @@ class _Analyzer:
         # 此时"一定有值"的名字。symbols 记录"出现过的名字和类型"，
         # defined 记录"不论走了哪个分支，此时都已经赋过值"的名字
         self.defined: set[str] = set()
+        self.loop_vars: set[str] = set()         # 正在执行的循环的变量：不能被赋值
+        self.ended_loop_vars: set[str] = set()   # 用过的循环变量：在循环外使用时给出专门的提示
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
         return BoundProgram(self._statements(program.sentences)), self.errors
@@ -99,6 +118,10 @@ class _Analyzer:
                     bound.append(self._assignment(statement))
                 case ast.If():
                     bound.append(self._if(statement))
+                case ast.CountLoop():
+                    bound.append(self._count_loop(statement))
+                case ast.RangeLoop():
+                    bound.append(self._range_loop(statement))
                 case _:
                     bound.append(self._sentence(statement))
         return tuple(bound)
@@ -135,6 +158,51 @@ class _Analyzer:
         self.last_type = None                        # 事先不知道走了哪个分支
         return BoundIf(tuple(branches), node.span)
 
+    # ---------- 繰り返し文 ----------
+
+    def _count_loop(self, node: ast.CountLoop) -> BoundCountLoop:
+        self._expect_loop_number(node.count, "回数")
+        body = self._loop_body(node.body)
+        return BoundCountLoop(node.count, body, node.span)
+
+    def _range_loop(self, node: ast.RangeLoop) -> BoundRangeLoop:
+        self._expect_loop_number(node.start, "始め")
+        self._expect_loop_number(node.end, "終わり")
+
+        name = node.var.name
+        conflict = (name in self.defined or name in self.loop_vars
+                    or self.symbols.get(name, Type.NUMBER) is not Type.NUMBER)
+        if conflict:
+            self._error("E3016", node.var.span, name=name)
+            body = self._loop_body(node.body)
+        else:
+            self.symbols[name] = Type.NUMBER
+            self.loop_vars.add(name)
+            body = self._loop_body(node.body, loop_var=name)
+            self.loop_vars.discard(name)
+            self.ended_loop_vars.add(name)
+        return BoundRangeLoop(name, node.start, node.end, body, node.span)
+
+    def _loop_body(self, statements, loop_var: str | None = None) -> tuple[BoundStatement, ...]:
+        """循环可能执行 0 次：循环里新定义的变量，循环之后都不算"一定有值"
+
+        循环变量本身只在循环内有值。
+        """
+        before = set(self.defined)
+        self.defined = before | ({loop_var} if loop_var else set())
+        self.last_type = None                        # 「それ」不跨越块的边界
+        body = self._statements(statements)
+        self.defined = before
+        self.last_type = None
+        return body
+
+    def _expect_loop_number(self, expr: ast.Expr, part: str) -> None:
+        actual = self._type_of(expr)                 # 在循环外计算：「それ」指向循环之前的结果
+        if actual is not None and actual is not Type.NUMBER:
+            self._error("E3015", expr.span, part=part, actual=self._describe_actual(expr, actual))
+
+    # ---------- 条件 ----------
+
     def _check_condition(self, condition: ast.Condition) -> None:
         if isinstance(condition, ast.Logical):
             for item in condition.items:
@@ -166,7 +234,10 @@ class _Analyzer:
         return BoundAssignment(assignment.target.name, assignment.value, assignment.span)
 
     def _define(self, target: ast.NameRef, new: Type | None) -> None:
-        """登记名字。重新赋值可以，改变类型不行"""
+        """登记名字。重新赋值可以，改变类型不行，循环变量不能改"""
+        if target.name in self.loop_vars:
+            self._error("E3017", target.span, name=target.name)
+            return
         self.defined.add(target.name)
         old = self.symbols.get(target.name)
         if old is not None and new is not None and old is not new:
@@ -260,8 +331,11 @@ class _Analyzer:
                     self._error("E3010", expr.span, name=name)
                     return None
                 if name not in self.defined:
-                    # 在某些分支里定义过，但不是所有情况下都有值
-                    self._error("E3014", expr.span, name=name)
+                    if name in self.ended_loop_vars:
+                        self._error("E3018", expr.span, name=name)
+                    else:
+                        # 在某些分支里定义过，但不是所有情况下都有值
+                        self._error("E3014", expr.span, name=name)
                 return self.symbols[name]
             case ast.ErrorExpr():
                 return None

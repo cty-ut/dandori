@@ -3,10 +3,12 @@
 用的方法叫"递归下降"：语法里的每一条规则写成一个函数，函数之间互相调用。
 
     プログラム ＝ { 文 }                                    → program()
-    文       ＝ もし文 | 代入文 | 手順文                       → _statement()
+    文       ＝ もし文 | 繰り返し文 | 代入文 | 手順文           → _statement()
     もし文    ＝ もし 条件 ならば 、? { 文 }                    → _if()
                 { そうでなく 条件 ならば 、? { 文 } }
                 [ そうでなければ 、? { 文 } ] ここまで 。
+    繰り返し文 ＝ 式 回繰り返して 、? { 文 } ここまで 。          → _loop()
+               | 名前を 式から 式まで 繰り返して 、? { 文 } ここまで 。
     条件     ＝ 比較 { かつ 比較 } | 比較 { または 比較 }        → _condition()
     比較     ＝ 式 比較記号 式 | 式 が 式 [以上|以下|…]          → _comparison()
     代入文    ＝ 名前 は 名詞句 とする 。                      → _assignment()
@@ -32,6 +34,9 @@ from dandori.frontend.source import Source, Span
 from dandori.frontend.tokens import Token, TokenKind as K
 
 _BLOCK_KEYWORDS = ("そうでなく", "そうでなければ", "ここまで")
+_LOOP_KEYWORDS = ("繰り返して", "回繰り返して")
+# 判断一句话是不是繰り返し文时，遇到这些就可以停止往后看
+_NOT_LOOP_KEYWORDS = ("もし", "ならば", "とする") + _BLOCK_KEYWORDS
 _COMPARISON_KEYWORDS = {"以上": ">=", "以下": "<=", "未満": "<", "を超える": ">", "でない": "<>"}
 
 
@@ -65,7 +70,8 @@ class _Parser:
                 if not top_level:
                     break
                 token = self._advance()
-                self._error("E2013", token.span, word=token.text)
+                opener = "「もし」や「繰り返して」" if token.text == "ここまで" else "「もし」"
+                self._error("E2013", token.span, word=token.text, opener=opener)
                 self._skip_to_next_sentence()
                 continue
             try:
@@ -77,9 +83,82 @@ class _Parser:
     def _statement(self) -> ast.Statement:
         if self._is_keyword("もし"):
             return self._if()
+        if self._starts_loop():
+            return self._loop()
         if self._starts_assignment():
             return self._assignment()
         return self._sentence()
+
+    # ---------- 繰り返し文 ----------
+
+    def _starts_loop(self) -> bool:
+        """从句首往后看：在遇到动词之前先遇到「繰り返して」，就是繰り返し文"""
+        for token in self.tokens[self.pos:]:
+            if token.kind is K.KEYWORD and token.text in _LOOP_KEYWORDS:
+                return True
+            if (token.kind in (K.VERB, K.PERIOD, K.EOF)
+                    or (token.kind is K.KEYWORD and token.text in _NOT_LOOP_KEYWORDS)):
+                return False
+        return False
+
+    def _loop(self) -> ast.CountLoop | ast.RangeLoop:
+        """3回繰り返して、…ここまで。　／　月を1から12まで繰り返して、…ここまで。"""
+        start = self._current().span.start
+        args: list[ast.Arg] = []
+        count = None
+
+        while self._starts_value(self._current()):
+            value = self._noun_phrase()
+            token = self._current()
+            if self._is_keyword("回繰り返して"):
+                count = value
+                break
+            if token.kind is not K.PARTICLE:
+                self._error("E2017", value.span)
+                raise _SentenceError
+            self._advance()
+            args.append(ast.Arg(token.text, value, Span(value.span.start, token.span.end)))
+
+        keyword = self._current()
+        if count is not None:
+            if args:                                   # 「月を3回繰り返して」
+                self._error("E2017", Span(start, keyword.span.end))
+            self._advance()
+            header = None
+        elif self._is_keyword("繰り返して"):
+            self._advance()
+            header = self._range_header(args, Span(start, keyword.span.end))
+        else:
+            self._error("E2017", Span(start, keyword.span.end))
+            raise _SentenceError
+
+        if self._current().kind is K.COMMA:
+            self._advance()
+        body = tuple(self._statements(top_level=False))
+
+        if self._is_keyword("ここまで"):
+            self._advance()
+            self._end_sentence()
+        else:
+            self._error("E2016", keyword.span)
+        span = Span(start, self._previous().span.end)
+
+        if count is not None:
+            return ast.CountLoop(count, body, span)
+        if header is None:                             # 范围写法有误，已经报过错
+            return ast.CountLoop(ast.ErrorExpr(keyword.span), body, span)
+        var, first, last = header
+        return ast.RangeLoop(var, first, last, body, span)
+
+    def _range_header(self, args: list[ast.Arg], span: Span):
+        """范围写法：助词须恰好为 を（名字）、から、まで，顺序自由"""
+        by_particle = {arg.particle: arg.value for arg in args}
+        target = by_particle.get("を")
+        if (len(args) != 3 or set(by_particle) != {"を", "から", "まで"}
+                or not isinstance(target, ast.Name)):
+            self._error("E2017", span)
+            return None
+        return ast.NameRef(target.name, target.span), by_particle["から"], by_particle["まで"]
 
     # ---------- もし文 ----------
 
@@ -291,9 +370,9 @@ class _Parser:
         """引数句 ＝ 名詞句 助詞"""
         value = self._noun_phrase()
         token = self._current()
-        if isinstance(value, ast.ErrorExpr) and token.kind is not K.PARTICLE:
-            # 不认识的词后面没有助词：多半是写错的动词（如「計算する」），
-            # 断词时已经报过错，这里安静地放弃这一句
+        if token.kind is K.UNKNOWN or (isinstance(value, ast.ErrorExpr) and token.kind is not K.PARTICLE):
+            # 值后面是不认识的词（「3回繰り返す」），或者不认识的词后面没有助词（「100を計算する」）：
+            # 多半是写错的动词或关键字，断词时已经报过错，这里安静地放弃这一句
             raise _SentenceError
         if token.kind is K.COMMA:
             self._error("E2002", token.span)
