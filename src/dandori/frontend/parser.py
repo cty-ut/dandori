@@ -300,6 +300,15 @@ class _Parser:
             right = self._expr()
             return ast.Comparison(token.value, left, right, Span(left.span.start, right.span.end))
 
+        if token.kind is K.KEYWORD and token.text in ("が休日", "が営業日"):   # 期日が休日（でない）
+            self._advance()
+            op = "="
+            if self._is_keyword("でない"):
+                op = "<>"
+                self._advance()
+            right = ast.DayKind(token.text[1:], token.span)
+            return ast.Comparison(op, left, right, Span(left.span.start, self._previous().span.end))
+
         if token.kind is K.PARTICLE and token.text == "が":   # 合計が100以上
             self._advance()
             if not self._starts_value(self._current()):
@@ -455,7 +464,8 @@ class _Parser:
                or (self.tokens[i].kind is K.PARTICLE and self.tokens[i].text == "の")):
             i += 1
         first = self.tokens[i]
-        if not (first.kind is K.COMPARE or (first.kind is K.PARTICLE and first.text == "が")):
+        if not (first.kind is K.COMPARE or (first.kind is K.PARTICLE and first.text == "が")
+                or (first.kind is K.KEYWORD and first.text in ("が休日", "が営業日"))):
             return False
         for token in self.tokens[i:]:
             if token.kind is K.KEYWORD and token.text in _MONO_KEYWORDS:

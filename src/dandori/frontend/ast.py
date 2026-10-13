@@ -36,6 +36,13 @@ class Today:
 
 
 @dataclass(frozen=True)
+class DayKind:
+    """期日が休日、期日が営業日：比较的右边（语法设计 14.4）"""
+    kind: str        # "休日" 或 "営業日"
+    span: Span
+
+
+@dataclass(frozen=True)
 class String:
     value: str
     span: Span
@@ -125,7 +132,7 @@ class ErrorExpr:
     span: Span
 
 
-Expr = (Number | DateLiteral | Today | String | Sore | Name | ColumnRef | ListExpr | BinaryOp | Negate
+Expr = (Number | DateLiteral | Today | DayKind | String | Sore | Name | ColumnRef | ListExpr | BinaryOp | Negate
         | PreviousResult | ErrorExpr | Blank | RowFilter | SortKey | BlanksOf)
 
 
@@ -355,6 +362,8 @@ def _describe(node) -> tuple[str, list]:
             return f"日付 {value}", []
         case Today():
             return "今日", []
+        case DayKind(kind=kind):
+            return kind, []
         case String(value=value):
             return f"文字列 「{value}」", []
         case Sore():

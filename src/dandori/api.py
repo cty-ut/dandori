@@ -30,6 +30,11 @@ class CompileResult:
         """程序会读取、写出哪些文件（「説明」）"""
         return self.program.resources
 
+    @property
+    def rule_data(self) -> tuple[str, ...]:
+        """程序使用的规则数据（祝日表等）及其来源和范围（「説明」）"""
+        return self.program.rule_data
+
 
 def compile_source(source: Source, registry: Registry | None = None,
                    base_dir: Path | None = None) -> CompileResult:
@@ -52,6 +57,8 @@ def run(source: Source, ctx: Context | None = None, registry: Registry | None = 
     写出的内容在程序全部成功后才写入（ctx.transaction.commit）；中途出错或试运行时什么都不写。
     """
     ctx = ctx or Context()
+    registry = registry or ctx.registry or default_registry()
+    ctx.registry = registry
     result = compile_source(source, registry, ctx.base_dir)
     if result.errors:
         return result.errors

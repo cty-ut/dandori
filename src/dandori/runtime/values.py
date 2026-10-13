@@ -44,19 +44,30 @@ def _days(n) -> timedelta:
     return timedelta(days=n)
 
 
-def add(a, b):
+def _shift(d: date, offset, sign: int, calendar):
+    """日付 ± 数（天数）・営業日数・月数（语法设计 13.3、14.4、14.5）"""
+    if isinstance(offset, dates.BusinessDays):
+        if calendar is None:
+            raise VerbError("E5012", first="?", last="?", date=dates.format_western(d))
+        return calendar.shift(d, sign * offset.count)
+    if isinstance(offset, dates.Months):
+        return dates.add_months(d, sign * offset.count)
+    return d + sign * _days(offset)
+
+
+def add(a, b, calendar=None):
     # 日付 + 数：数是天数（语法设计 13.3）
     if isinstance(a, date):
-        return a + _days(b)
+        return _shift(a, b, 1, calendar)
     if isinstance(b, date):
-        return b + _days(a)
+        return _shift(b, a, 1, calendar)
     return _wrap(_amount(a) + _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
 
-def subtract(a, b):
+def subtract(a, b, calendar=None):
     # 日付 − 日付 = 天数；日付 − 数 = 日付
     if isinstance(a, date):
-        return (a - b).days if isinstance(b, date) else a - _days(b)
+        return (a - b).days if isinstance(b, date) else _shift(a, b, -1, calendar)
     return _wrap(_amount(a) - _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
 
@@ -112,6 +123,8 @@ def format_value(value: Value) -> str:
         return value.format()
     if isinstance(value, date):
         return dates.format_western(value)        # 西暦（语法设计 13.6）
+    if isinstance(value, (dates.BusinessDays, dates.Months)):
+        return value.format()
     if isinstance(value, Decimal):
         return format(value.normalize(), "f")
     return str(value)

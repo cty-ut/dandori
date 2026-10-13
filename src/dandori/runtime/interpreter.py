@@ -41,6 +41,12 @@ class Context:
     dry_run: bool = False                              # 「試し」：执行全部，但不写入
     # 「今日」：程序中唯一随时间变化的值，由执行上下文提供（语法设计 13.7）。固定日本时间
     today: date = field(default_factory=dates.today_jst)
+    # 注册表：日付的属性、营业日日历都由它提供（api.run 设置；直接调用 execute 时使用标准的注册表）
+    registry: object = None
+
+    @property
+    def calendar(self):
+        return self.registry.calendar if self.registry is not None else None
 
 
 class ExecutionError(Exception):
@@ -58,6 +64,9 @@ class _Continue(Exception):
 
 
 def execute(program: BoundProgram, ctx: Context) -> None:
+    if ctx.registry is None:
+        from dandori.plugin.registry import default_registry
+        ctx.registry = default_registry()
     _Executor(ctx).block(program.sentences, last=None)
 
 
@@ -192,6 +201,8 @@ class _Executor:
             # 所以「金額が空欄でないかつ金額が10000以上」不会对空欄做大小比较
             results = (self.test(item, last, row) for item in condition.items)
             return all(results) if condition.op == "かつ" else any(results)
+        if isinstance(condition.right, ast.DayKind):
+            return self._day_kind(condition, last, row)
         a = self.evaluate(condition.left, last, row)
         b = self.evaluate(condition.right, last, row)
         if (a is BLANK or b is BLANK) and condition.op not in ("=", "<>"):
@@ -199,6 +210,16 @@ class _Executor:
             column = side.name if isinstance(side, ast.Name) else "値"
             raise VerbError("E5006", column=column, where=self._origin(side, row))
         return _COMPARISONS[condition.op](a, b)
+
+    def _day_kind(self, condition: ast.Comparison, last, row) -> bool:
+        """期日が休日（でない）、期日が営業日（语法设计 14.4）"""
+        day = self.evaluate(condition.left, last, row)
+        if day is BLANK:
+            column = condition.left.name if isinstance(condition.left, ast.Name) else "値"
+            raise VerbError("E5006", column=column, where=self._origin(condition.left, row))
+        business = self.ctx.calendar.is_business_day(day)
+        result = business if condition.right.kind == "営業日" else not business
+        return result if condition.op == "=" else not result
 
     # ---------- 值 ----------
 
@@ -220,7 +241,11 @@ class _Executor:
             case ast.ColumnRef(table=table, column=column):
                 target = self.evaluate(table, last, row)
                 if isinstance(target, date) or (isinstance(target, list) and not isinstance(target, Table)):
-                    return _date_property(target, column)      # 期日の月末（语法设计 13.5）
+                    function = self.ctx.registry.date_property(column).function
+                    try:
+                        return _date_property(target, function)      # 期日の月末（语法设计 13.5）
+                    except VerbError as e:
+                        raise ExecutionError(Diagnostic.make(e.code, expr.span, **e.params)) from None
                 return target.column(column)
             case ast.ListExpr(items=items):
                 return [self.evaluate(item, last, row) for item in items]
@@ -233,6 +258,8 @@ class _Executor:
                 self._no_blank(a, left, row)
                 self._no_blank(b, right, row)
                 try:
+                    if op in ("+", "-"):
+                        return _OPERATORS[op](a, b, self.ctx.calendar)   # 日付 ± 営業日数 需要日历
                     return _OPERATORS[op](a, b)
                 except VerbError as e:
                     raise ExecutionError(Diagnostic.make(e.code, expr.span, **e.params)) from None
@@ -259,8 +286,7 @@ class _Executor:
             raise ExecutionError(Diagnostic.make("E5004", expr.span, where=self._origin(expr, row)))
 
 
-def _date_property(target, name: str):
-    function = dates.PROPERTIES[name][0]
+def _date_property(target, function):
     if isinstance(target, list):
         return [v if v is BLANK else function(v) for v in target]
     return function(target)

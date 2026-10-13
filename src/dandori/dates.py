@@ -102,17 +102,39 @@ def fiscal_year(d: date) -> int:
     return d.year if d.month >= 4 else d.year - 1
 
 
-PROPERTIES = {
-    # 名字: (求值函数, 结果的类型名)
-    "年": (lambda d: d.year, "数"),
-    "月": (lambda d: d.month, "数"),
-    "日": (lambda d: d.day, "数"),
-    "曜日": (lambda d: WEEKDAYS[d.weekday()], "文字列"),
-    "月初": (month_start, "日付"),
-    "月末": (month_end, "日付"),
-    "年度": (fiscal_year, "数"),
-    "和暦": (format_wareki, "文字列"),
-}
+def weekday(d: date) -> str:
+    return WEEKDAYS[d.weekday()]
+
+
+def add_months(d: date, months: int) -> date:
+    """加减月份：那个月没有这一天时取月末（民法第 143 条，语法设计 14.5）
+
+        2026年1月31日 + 1か月 → 2026年2月28日
+        2026年2月28日 + 1か月 → 2026年3月28日（不是 3 月 31 日）
+    """
+    years, month_index = divmod(d.month - 1 + months, 12)
+    year, month = d.year + years, month_index + 1
+    return date(year, month, min(d.day, calendar.monthrange(year, month)[1]))
+
+
+# ---------- 带单位的数（语法设计 14.4、14.5） ----------
+
+@dataclass(frozen=True)
+class BusinessDays:
+    """3営業日：只能与日付相加减，由营业日日历计算"""
+    count: int
+
+    def format(self) -> str:
+        return f"{self.count}営業日"
+
+
+@dataclass(frozen=True)
+class Months:
+    """1か月、2年（＝24か月）"""
+    count: int
+
+    def format(self) -> str:
+        return f"{self.count}か月"
 
 
 def today_jst() -> date:

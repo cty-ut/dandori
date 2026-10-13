@@ -78,11 +78,15 @@ def main(argv: list[str] | None = None) -> int:
 def _explain(result: api.CompileResult) -> None:
     if not result.resources:
         print("このプログラムはファイルを読み込んだり書き出したりしません")
-        return
-    print("このプログラムは次のことをします：")
-    for resource in result.resources:
-        note = "（条件によって）" if resource.conditional else ""
-        print(f"  {resource.explain}{note}")
+    else:
+        print("このプログラムは次のことをします：")
+        for resource in result.resources:
+            note = "（条件によって）" if resource.conditional else ""
+            print(f"  {resource.explain}{note}")
+    if result.rule_data:
+        print("使うルールデータ：")
+        for line in result.rule_data:
+            print(f"  {line}")
 
 
 def _report_files(ctx: Context) -> None:

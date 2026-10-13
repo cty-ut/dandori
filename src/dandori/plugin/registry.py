@@ -82,14 +82,30 @@ class VerbSpec:
     resource_param: str | None = None
     # 「説明」「試し」中的说明，如「「{path}」を新規作成します」
     explain: str | None = None
+    # 使用的规则数据（如「祝日」）：「説明」中显示其版本（语法设计 14.2）
+    uses: str | None = None
 
     def param_for(self, particle: str) -> Param | None:
         return next((p for p in self.params if p.particle == particle), None)
 
 
+@dataclass(frozen=True)
+class DateProperty:
+    """日付的属性：期日の月末、期日の翌営業日（语法设计 13.5、14.4）"""
+    name: str
+    function: Callable                # date → 值
+    result: Type
+    uses: str | None = None           # 使用的规则数据
+
+
 class Registry:
     def __init__(self) -> None:
         self._verbs: dict[str, VerbSpec] = {}
+        self._date_properties: dict[str, DateProperty] = {}
+        # 规则数据：名字 → 说明（来源、版本、范围）。「説明」中显示（语法设计 14.2）
+        self.rule_data: dict[str, str] = {}
+        # 营业日日历：「3営業日」「が休日」由它计算。由日本包提供
+        self.calendar = None
 
     def add_verb(self, spec: VerbSpec) -> None:
         if spec.id in self._verbs:
@@ -97,6 +113,18 @@ class Registry:
         if len({p.particle for p in spec.params}) != len(spec.params):
             raise ValueError(f"同じ助詞の引数が二つあります：{spec.id}")
         self._verbs[spec.id] = spec
+
+    def add_date_property(self, prop: DateProperty) -> None:
+        if prop.name in self._date_properties:
+            raise ValueError(f"日付の属性が二重に登録されています：{prop.name}")
+        self._date_properties[prop.name] = prop
+
+    def date_property(self, name: str) -> DateProperty | None:
+        return self._date_properties.get(name)
+
+    @property
+    def date_property_names(self) -> list[str]:
+        return list(self._date_properties)
 
     def verb(self, verb_id: str) -> VerbSpec:
         return self._verbs[verb_id]
@@ -108,10 +136,12 @@ class Registry:
 
 def default_registry() -> Registry:
     """登记了标准库的注册表"""
-    from dandori.stdlib import arithmetic, files, table_ops
+    from dandori.stdlib import arithmetic, date_properties, files, japan, table_ops
 
     registry = Registry()
     arithmetic.register(registry)
     files.register(registry)
     table_ops.register(registry)
+    date_properties.register(registry)
+    japan.register(registry)
     return registry

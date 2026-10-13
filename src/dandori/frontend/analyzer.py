@@ -30,8 +30,8 @@ from dandori import dates
 from dandori.money import Money
 from dandori.types import ELEMENT_OF, LIST_OF, NUMERIC, NUMERIC_LISTS, TableType, Type, ValueType
 
-_PROPERTY_TYPES = {"数": Type.NUMBER, "文字列": Type.STRING, "日付": Type.DATE}
 _ORDERED = NUMERIC | {Type.DATE}          # 可以比较大小的类型
+_DATE_UNITS = {Type.BUSINESS_DAYS, Type.MONTHS}   # 只能与日付相加减的带单位的数
 
 # "有结果，但类型未知"（如文件读取失败）。与 None（没有结果）区分开，避免后续连锁报错
 _UNKNOWN = object()
@@ -119,6 +119,7 @@ class Resource:
 class BoundProgram:
     sentences: tuple[BoundStatement, ...]
     resources: tuple[Resource, ...] = ()
+    rule_data: tuple[str, ...] = ()       # 使用的规则数据的说明（如祝日表的来源和范围）
 
 
 def analyze(program: ast.Program, registry: Registry, source: Source, base_dir: Path | None = None
@@ -150,11 +151,18 @@ class _Analyzer:
         self.loop_depth = 0                      # 「繰り返しをやめる」「次に進む」只能在循环中使用
         self.if_depth = 0                        # もし文中的写出：「説明」中标注"条件によって"
         self.resources: list[Resource] = []
+        self.rule_data: list[str] = []           # 使用的规则数据的名字（如「祝日」）
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
         statements = self._statements(program.sentences)
         self._check_resources()
-        return BoundProgram(statements, tuple(self.resources)), self.errors
+        rule_data = tuple(f"{name}：{self.registry.rule_data[name]}" for name in self.rule_data)
+        return BoundProgram(statements, tuple(self.resources), rule_data), self.errors
+
+    def _use(self, name: str | None) -> None:
+        """记录程序使用了某种规则数据（「説明」中显示其版本，语法设计 14.2）"""
+        if name is not None and name not in self.rule_data:
+            self.rule_data.append(name)
 
     def _check_resources(self) -> None:
         """同一个文件写两次（E3040）。写出后再读取（E3041）在 _step 中、尝试读取之前检查"""
@@ -291,6 +299,15 @@ class _Analyzer:
             self._check_comparison(condition)
 
     def _check_comparison(self, comparison: ast.Comparison) -> None:
+        if isinstance(comparison.right, ast.DayKind):
+            # 期日が休日：只能对日付使用（语法设计 14.4）
+            actual = self._type_of(comparison.left)
+            if actual is not None and actual is not Type.DATE:
+                self._error("E3051", comparison.left.span,
+                            actual=self._describe_actual(comparison.left, actual))
+            self._use("祝日")
+            return
+
         # 与空欄比较：只能用「が空欄」「が空欄でない」（语法设计 9.7）
         blank_sides = [isinstance(side, ast.Blank) for side in (comparison.left, comparison.right)]
         if any(blank_sides):
@@ -449,6 +466,8 @@ class _Analyzer:
                 span = bound[spec.resource_param].span if spec.resource_param in bound else step.span
                 self._error(e.code, span, **e.params)
 
+        self._use(spec.uses)
+
         # 7. 记录程序会碰的文件
         if spec.effect is Effect.WRITE and self.loop_depth > 0:
             self._error("E3042", step.span)
@@ -564,6 +583,11 @@ class _Analyzer:
     def _type_of(self, expr: ast.Expr) -> ValueType | None:
         """推断类型。返回 None 表示"已经报过错，类型未知"，调用方就不再追加错误"""
         match expr:
+            case ast.Number(value=dates.BusinessDays()):      # 必须在一般的「数」之前匹配
+                self._use("祝日")
+                return Type.BUSINESS_DAYS
+            case ast.Number(value=dates.Months()):
+                return Type.MONTHS
             case ast.Number(value=value):
                 return Type.MONEY if isinstance(value, Money) else Type.NUMBER
             case ast.DateLiteral(value=value):
@@ -621,7 +645,7 @@ class _Analyzer:
                 return self._arithmetic_type(expr, op, self._expect_number(left), self._expect_number(right))
             case ast.Negate(operand=operand):
                 operand_type = self._expect_number(operand)
-                if operand_type is Type.DATE:
+                if operand_type is Type.DATE or operand_type in _DATE_UNITS:
                     self._error("E3045", expr.span)
                 return operand_type or Type.NUMBER
         raise TypeError(f"未知のノード：{expr!r}")
@@ -633,12 +657,13 @@ class _Analyzer:
         if table is None:
             return None
         if table in (Type.DATE, Type.DATE_LIST):
-            prop = dates.PROPERTIES.get(expr.column)
+            prop = self.registry.date_property(expr.column)
             if prop is None:
-                self._error("E3049", expr.column_span, name=expr.column)
+                self._error("E3049", expr.column_span, name=expr.column,
+                            names="、".join(self.registry.date_property_names))
                 return None
-            result = _PROPERTY_TYPES[prop[1]]
-            return result if table is Type.DATE else LIST_OF[result]
+            self._use(prop.uses)
+            return prop.result if table is Type.DATE else LIST_OF[prop.result]
         if not isinstance(table, TableType):
             self._error("E3026", expr.span, actual=self._describe_actual(expr.table, table))
             return None
@@ -654,7 +679,7 @@ class _Analyzer:
     def _expect_number(self, expr: ast.Expr) -> Type | None:
         """算式的一边：必须是数、金額或日付。返回它的类型（不是时报错并返回 None）"""
         actual = self._type_of(expr)
-        if actual is not None and actual not in _ORDERED:
+        if actual is not None and actual not in _ORDERED | _DATE_UNITS:
             self._error("E3008", expr.span, actual=self._describe_actual(expr, actual))
             return None
         return actual
@@ -662,7 +687,7 @@ class _Analyzer:
     def _arithmetic_type(self, expr: ast.BinaryOp, op: str, left, right) -> Type:
         """金額与数宽松互通（语法设计 12.4）：有一方是金額，结果就是金額。
         金額÷金額 是比例（数）；金額×金額、数÷金額 没有意义"""
-        if Type.DATE in (left, right):
+        if Type.DATE in (left, right) or {left, right} & _DATE_UNITS:
             return self._date_arithmetic_type(expr, op, left, right)
         left_money, right_money = left is Type.MONEY, right is Type.MONEY
         if op == "*" and left_money and right_money:
@@ -675,10 +700,12 @@ class _Analyzer:
         return Type.MONEY if left_money or right_money else Type.NUMBER
 
     def _date_arithmetic_type(self, expr: ast.BinaryOp, op: str, left, right) -> Type | None:
-        """日付 ± 数 → 日付；日付 − 日付 → 数（天数）；其他都不行（语法设计 13.3）"""
-        if op == "+" and Type.NUMBER in (left, right) and Type.DATE in (left, right):
+        """日付 ± 数・営業日数・月数 → 日付；日付 − 日付 → 数（天数）；其他都不行（语法设计 13.3、14.4、14.5）"""
+        offsets = {Type.NUMBER} | _DATE_UNITS
+        if op == "+" and Type.DATE in (left, right) and ({left, right} - {Type.DATE}) <= offsets \
+                and left is not right:
             return Type.DATE
-        if op == "-" and left is Type.DATE and right is Type.NUMBER:
+        if op == "-" and left is Type.DATE and right in offsets:
             return Type.DATE
         if op == "-" and left is Type.DATE and right is Type.DATE:
             return Type.NUMBER
@@ -719,9 +746,9 @@ def _table_or_none(t):
 def _describe_types(types: frozenset) -> str:
     if types == {TableType}:
         return "表"
-    if types <= NUMERIC | NUMERIC_LISTS:
-        return "数"
-    if types <= NUMERIC | NUMERIC_LISTS | {Type.DATE}:
+    if types <= NUMERIC | NUMERIC_LISTS | _DATE_UNITS:
+        return "数"                                  # 営業日数・月数也是"带单位的数"
+    if types <= NUMERIC | NUMERIC_LISTS | _DATE_UNITS | {Type.DATE}:
         return "数か日付"
     return "か".join(t.value for t in types)
 

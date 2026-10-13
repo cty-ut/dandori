@@ -31,6 +31,8 @@ from dandori.money import Money
 _WHITESPACE = set(" \t\r\n　")
 _DIGITS = set("0123456789")
 _UNITS = {"億": 10 ** 8, "万": 10 ** 4, "千": 10 ** 3, "百": 10 ** 2}
+# 月数的写法：日本人都在用（语法设计 14.5）
+_MONTH_UNITS = ("か月", "ヶ月", "カ月", "ヵ月", "ケ月")
 # 比较符号：先试两个字符的，再试一个字符的。值是标准写法
 _COMPARE = {
     ">=": ">=", "<=": "<=", "<>": "<>", "!=": "<>",
@@ -137,8 +139,18 @@ class _Lexer:
             if unit == 1 or self._peek() not in _DIGITS:
                 break
 
+        unit_kind = None
         if self._peek() == "円":
             yen = True
+            self.pos += 1
+        elif not yen and self.text.startswith("営業日", self.pos):
+            unit_kind = "営業日"                        # 3営業日（语法设计 14.4）
+            self.pos += 3
+        elif not yen and (month_unit := next((u for u in _MONTH_UNITS if self.text.startswith(u, self.pos)), None)):
+            unit_kind = "か月"                          # 1か月、1ヶ月…（语法设计 14.5）
+            self.pos += len(month_unit)
+        elif not yen and self._peek() == "年" and self._peek(1) != "度" and self._peek(1) not in _DIGITS:
+            unit_kind = "年"                            # 2年 ＝ 24か月。「2026年度」不算
             self.pos += 1
         elif self._peek() == "日" and not yen:
             self.pos += 1                              # 30日：天数，就是数 30（语法设计 13.2）
@@ -148,7 +160,18 @@ class _Lexer:
                                                word=self.source.text[start:self.pos]))
         if isinstance(total, Decimal) and total == total.to_integral_value():
             total = int(total)                         # 1.5万 → 15000
-        value = Money(total) if yen else total
+        if unit_kind is not None and not isinstance(total, int):
+            self.errors.append(Diagnostic.make("E1013", Span(start, self.pos),
+                                               word=self.source.text[start:self.pos]))
+            total = int(total)
+        if unit_kind == "営業日":
+            value = dates.BusinessDays(total)
+        elif unit_kind == "か月":
+            value = dates.Months(total)
+        elif unit_kind == "年":
+            value = dates.Months(total * 12)
+        else:
+            value = Money(total) if yen else total
         self._emit(TokenKind.NUMBER, start, self.pos, value=value, advance=False)
 
     def _date(self, match) -> None:

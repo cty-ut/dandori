@@ -16,6 +16,8 @@ class Type(Enum):
     MONEY_LIST = "金額の並び"      # 100円と200円、金額的列
     DATE = "日付"
     DATE_LIST = "日付の並び"
+    BUSINESS_DAYS = "営業日数"     # 3営業日（语法设计 14.4）
+    MONTHS = "月数"                # 1か月、2年（语法设计 14.5）
 
 
 @dataclass(frozen=True)
