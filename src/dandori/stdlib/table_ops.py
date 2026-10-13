@@ -16,11 +16,12 @@ from dandori.frontend.conjugation import Conjugation
 from dandori.plugin.registry import Param, ParamKind as P, Registry, VerbError, VerbSpec
 from dandori.runtime import values
 from dandori.table.interface import Column, Table
-from dandori.types import TableType, Type
+from dandori.money import Money
+from dandori.types import NUMERIC, NUMERIC_LISTS, TableType, Type
 
 _TABLE = frozenset({TableType})
-_NUMBERS = frozenset({Type.NUMBER_LIST})
-_SCALAR = frozenset({Type.NUMBER, Type.STRING})
+_NUMBERS = NUMERIC_LISTS                            # 数或金額的列
+_SCALAR = NUMERIC | {Type.STRING}
 
 
 def column_names(expr: ast.Expr) -> list[str]:
@@ -62,6 +63,7 @@ def infer_toridasu(args, types, ctx):
 
 def _aggregate(column, keys, reduce_values, result_name=None):
     table, name = column
+    value_type = table.type.column(name)           # 金額列的合计、平均也是金額
     if not keys:
         return reduce_values(table.column(name))
 
@@ -71,7 +73,7 @@ def _aggregate(column, keys, reduce_values, result_name=None):
                        [table.origins[i] for i in indexes])
         rows.append(key + (reduce_values(group),))
         origins.append("、".join(f"{k}＝{values.format_value(v)}" for k, v in zip(keys, key)) + " の集計")
-    columns = tuple((k, table.type.column(k)) for k in keys) + ((result_name or name, Type.NUMBER),)
+    columns = tuple((k, table.type.column(k)) for k in keys) + ((result_name or name, value_type),)
     display = [table.display_name(k) for k in keys] + [result_name or table.display_name(name)]
     return Table(TableType(columns), rows, origins, display)
 
@@ -101,14 +103,15 @@ def heikin(ctx, column, keys=None):
 
 
 def infer_aggregate(args, types, ctx):
-    if "keys" not in args:
-        return Type.NUMBER
     table = _table(types.get("column"))
     if table is None:
         return None
-    keys = column_names(args["keys"])
     name = args["column"].column
-    return TableType(tuple((k, table.column(k)) for k in keys) + ((name, Type.NUMBER),))
+    value_type = table.column(name)                # 金額列的合计、平均也是金額
+    if "keys" not in args:
+        return value_type
+    keys = column_names(args["keys"])
+    return TableType(tuple((k, table.column(k)) for k in keys) + ((name, value_type),))
 
 
 # ---------- 数える：计数，可以分组 ----------
@@ -148,6 +151,8 @@ def naraberu(ctx, table: Table, order):
 def umeru(ctx, target, value):
     """明細の金額の空欄を0で埋める"""
     table, name = target
+    if table.type.column(name) is Type.MONEY and not isinstance(value, Money):
+        value = Money(value)                       # 金額列的空欄用 0 填：填进去的是 0円
     return table.fill_blanks(name, value)
 
 
@@ -158,7 +163,8 @@ def infer_umeru(args, types, ctx):
         return None
     column = args["target"].target.column
     column_type = table.column(column)
-    if value is not None and column_type is not None and value is not column_type:
+    compatible = value is column_type or (value in NUMERIC and column_type in NUMERIC)
+    if value is not None and column_type is not None and not compatible:
         raise VerbError("E3034", column=column, column_type=column_type.value, actual=value.value)
     return table
 

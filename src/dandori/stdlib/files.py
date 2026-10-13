@@ -16,6 +16,7 @@ from dandori.connectors.csv import read_csv, write_csv
 from dandori.frontend import ast
 from dandori.frontend.conjugation import Conjugation
 from dandori.plugin.registry import Effect, InferContext, Param, Registry, VerbError, VerbSpec
+from dandori.runtime import values
 from dandori.types import TableType, Type
 
 
@@ -79,11 +80,13 @@ def check_uwagaki(args, types, ctx: InferContext):
 
 def kakidasu(ctx, table, path):
     """集計を「集計.csv」に書き出す（新建）"""
+    values.check_no_fraction(table)                # 带零头的金額不能写出（语法设计 12.5）
     ctx.transaction.stage(resolve(path, ctx.base_dir), path, write_csv(table), False, len(table))
 
 
 def uwagaki(ctx, table, path):
     """「集計.csv」を集計で上書きする"""
+    values.check_no_fraction(table)
     ctx.transaction.stage(resolve(path, ctx.base_dir), path, write_csv(table), True, len(table))
 
 

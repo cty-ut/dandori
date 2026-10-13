@@ -2,19 +2,23 @@
 
 数只有两种表示：整数用 int，小数用 Decimal，绝不用 float（语法设计决定记录）。
 每次计算后都规整一次：结果是整数就变回 int，所以 1.5×2 显示为 3 而不是 3.0。
+
+金額（Money）与数宽松互通（语法设计 12.4）：有一方是金額，结果就是金額；
+只有 金額×金額、数÷金額 没有意义（意味解析会先报错，这里是最后一道防线）。
 """
 
 from __future__ import annotations
 
 from decimal import Decimal
 
+from dandori.money import Money
 from dandori.plugin.registry import VerbError
 from dandori.table.interface import BLANK, Column, Table
 from dandori.text import display_width, pad
 from dandori.types import Type
 
 Number = int | Decimal
-Value = Number | str | list | Table
+Value = Number | Money | str | list | Table
 
 
 def canonical(n: Number) -> Number:
@@ -23,26 +27,52 @@ def canonical(n: Number) -> Number:
     return n
 
 
-def add(a: Number, b: Number) -> Number:
-    return canonical(a + b)
+def _amount(v) -> Number:
+    return v.amount if isinstance(v, Money) else v
 
 
-def subtract(a: Number, b: Number) -> Number:
-    return canonical(a - b)
+def _wrap(result: Number, money: bool):
+    return Money(result) if money else canonical(result)
 
 
-def multiply(a: Number, b: Number) -> Number:
-    return canonical(a * b)
+def add(a, b):
+    return _wrap(_amount(a) + _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
 
-def divide(a: Number, b: Number) -> Number:
-    """除法：除不尽时得到 Decimal（精度 28 位）
+def subtract(a, b):
+    return _wrap(_amount(a) - _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
-    10÷3 的端数处理（四舍五入、切り捨て等）属于业务规则，阶段 4 的「金額」类型再处理。
+
+def multiply(a, b):
+    if isinstance(a, Money) and isinstance(b, Money):
+        raise VerbError("E3043")
+    return _wrap(_amount(a) * _amount(b), isinstance(a, Money) or isinstance(b, Money))
+
+
+def divide(a, b):
+    """除法：除不尽时得到 Decimal（精度 28 位）。金額÷金額 是比例（数）
+
+    端数处理（切り捨て、四捨五入等）由用户明确写出（语法设计 12.5）。
     """
-    if b == 0:
+    if _amount(b) == 0:
         raise VerbError("E5001")
-    return canonical(Decimal(a) / Decimal(b))
+    if isinstance(b, Money) and not isinstance(a, Money):
+        raise VerbError("E3044")
+    result = Decimal(_amount(a)) / Decimal(_amount(b))
+    return _wrap(result, isinstance(a, Money) and not isinstance(b, Money))
+
+
+def check_no_fraction(value) -> None:
+    """显示、写出之前：金額不能带 1 円以下的零头（语法设计 12.5）"""
+    if isinstance(value, Money) and value.has_fraction:
+        raise VerbError("E5010", value=value.format())
+    if isinstance(value, Table):
+        for row in value.rows:
+            for cell in row:
+                check_no_fraction(cell)
+    elif isinstance(value, list):
+        for item in value:
+            check_no_fraction(item)
 
 
 def check_no_blanks(numbers: list) -> None:
@@ -61,6 +91,8 @@ def format_value(value: Value) -> str:
         return "（空欄）"
     if isinstance(value, list):
         return "、".join(format_value(v) for v in value)
+    if isinstance(value, Money):
+        return value.format()
     if isinstance(value, Decimal):
         return format(value.normalize(), "f")
     return str(value)
@@ -70,7 +102,7 @@ def format_table(table: Table) -> str:
     """按列对齐显示：全角字符占两格，数右对齐，空欄显示为空白"""
     header = table.display_names
     cells = [["" if v is BLANK else format_value(v) for v in row] for row in table.rows]
-    numeric = [t is Type.NUMBER for _, t in table.type.columns]
+    numeric = [t in (Type.NUMBER, Type.MONEY) for _, t in table.type.columns]
     widths = [max([display_width(h)] + [display_width(row[i]) for row in cells])
               for i, h in enumerate(header)]
     lines = ["  ".join(pad(h, w, right=num) for h, w, num in zip(header, widths, numeric)).rstrip()]

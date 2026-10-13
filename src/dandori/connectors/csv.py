@@ -4,6 +4,7 @@
 - 文字编码：Excel 日文环境默认存为 Shift_JIS，银行 CSV 也大多如此 → 自动识别
 - 数字：千位分隔符「1,000」、全角数字「１００」 → 都识别为数
 - 编码：以 0 开头的「00123」「0600001」（取引先コード、郵便番号、電話番号） → 文字列，保留开头的 0
+- 金額：「1,000円」「¥1,000」；会计的负数写法「△1,000」「▲1,000」（语法设计 12.3）
 - 空格子 → 空欄（不是 0）
 """
 
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from dandori.connectors import ConnectorError
 from dandori.frontend.normalize import normalize
+from dandori.money import Money
 from dandori.table.interface import BLANK, Table
 from dandori.types import TableType, Type
 
@@ -49,13 +51,20 @@ def read_csv(path: Path, display_name: str) -> Table:
 
     # 类型推断：一列中所有非空的值都是数 → 数；否则 → 文字列。
     # 只要有一个值像编码（以 0 开头，如「00123」），整列就是文字列：
-    # 真正的金额、数量不会写成「0123」，而编码的开头 0 一旦丢失就无法恢复
+    # 真正的金额、数量不会写成「0123」，而编码的开头 0 一旦丢失就无法恢复。
+    # 是数、并且有一个值带「円」或「¥」 → 整列是金額（不带单位的值也视为日元）
     types = []
     for i in range(len(header)):
         cells = [row[i] for row in raw_rows if row[i] != ""]
-        is_number = (cells and all(_parse_number(c) is not None for c in cells)
-                     and not any(_CODE.match(normalize(c)) for c in cells))
-        types.append(Type.NUMBER if is_number else Type.STRING)
+        parsed = [_parse_number(c) for c in cells]
+        is_number = (cells and all(p is not None for p in parsed)
+                     and not any(_CODE.match(_strip_sign(normalize(c))) for c in cells))
+        if not is_number:
+            types.append(Type.STRING)
+        elif any(isinstance(p, Money) for p in parsed):
+            types.append(Type.MONEY)
+        else:
+            types.append(Type.NUMBER)
 
     rows = [tuple(_convert(cell, t) for cell, t in zip(row, types)) for row in raw_rows]
     table_type = TableType(tuple(zip(names, types)))
@@ -84,20 +93,37 @@ def _column_names(header: list[str], display_name: str) -> list[str]:
     return names
 
 
+def _strip_sign(text: str) -> str:
+    return text[1:] if text[:1] in "-△▲" else text
+
+
 def _parse_number(cell: str):
-    text = normalize(cell)                             # 全角数字、全角负号 → 半角
-    if not _NUMBER.fullmatch(text):
+    """数或金額：1,000、△1,000、1,000円、¥1,000。不是数时返回 None"""
+    text = normalize(cell)                             # 全角数字、全角负号、￥ → 半角
+    negative = text[:1] in "-△▲"                       # △▲：日本会计的负数写法
+    text = _strip_sign(text)
+    money = False
+    if text.startswith("¥"):
+        money, text = True, text[1:]
+    if text.endswith("円"):
+        money, text = True, text[:-1]
+    if not _NUMBER.fullmatch(text) or text.startswith("-"):
         return None
     text = text.replace(",", "")
-    if "." not in text:
-        return int(text)
-    value = Decimal(text)
-    return int(value) if value == value.to_integral_value() else value   # 3.0 → 3，与计算结果一致
+    value = Decimal(text) if "." in text else int(text)
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        value = int(value)                             # 3.0 → 3，与计算结果一致
+    if negative:
+        value = -value
+    return Money(value) if money else value
 
 
 def _convert(cell: str, column_type: Type):
     if cell == "":
         return BLANK
+    if column_type is Type.MONEY:
+        value = _parse_number(cell)
+        return value if isinstance(value, Money) else Money(value)
     if column_type is Type.NUMBER:
         return _parse_number(cell)
     return cell
@@ -122,6 +148,8 @@ def write_csv(table: Table) -> bytes:
 def _format_cell(value) -> str:
     if value is BLANK:
         return ""
+    if isinstance(value, Money):
+        value = value.amount                           # 不带单位：Excel 打开后仍是数
     if isinstance(value, Decimal):
         return format(value.normalize(), "f")
     return str(value)

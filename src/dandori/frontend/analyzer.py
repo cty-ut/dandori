@@ -26,7 +26,8 @@ from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.source import Source, Span
 from dandori.plugin.registry import Effect, InferContext, Param, ParamKind, Registry, VerbError, VerbSpec
-from dandori.types import LIST_OF, TableType, Type, ValueType
+from dandori.money import Money
+from dandori.types import LIST_OF, NUMERIC, NUMERIC_LISTS, TableType, Type, ValueType
 
 # "有结果，但类型未知"（如文件读取失败）。与 None（没有结果）区分开，避免后续连锁报错
 _UNKNOWN = object()
@@ -300,15 +301,15 @@ class _Analyzer:
         right = self._type_of(comparison.right)
 
         if comparison.op in (">=", "<=", "<", ">"):
-            # 以上・以下・未満・超える：只能比较数
+            # 以上・以下・未満・超える：只能比较数（金額也可以，语法设计 12.4）
             for expr, actual in ((comparison.left, left), (comparison.right, right)):
-                if actual is not None and actual is not Type.NUMBER:
+                if actual is not None and actual not in NUMERIC:
                     self._error("E3012", expr.span, op=ast.COMPARISON_WORDS[comparison.op],
                                 actual=self._describe_actual(expr, actual))
         elif left is not None and right is not None:
-            # 等于・不等于：类型相同，且为数或文字列
-            comparable = (Type.NUMBER, Type.STRING)
-            if left is not right or left not in comparable:
+            # 等于・不等于：类型相同的数或文字列；数与金額之间也可以
+            same = left is right and left in (Type.NUMBER, Type.STRING, Type.MONEY)
+            if not same and not (left in NUMERIC and right in NUMERIC):
                 self._error("E3013", comparison.span, left=left.value, right=right.value)
 
     def _assignment(self, assignment: ast.Assignment) -> BoundAssignment:
@@ -543,8 +544,8 @@ class _Analyzer:
     def _type_of(self, expr: ast.Expr) -> ValueType | None:
         """推断类型。返回 None 表示"已经报过错，类型未知"，调用方就不再追加错误"""
         match expr:
-            case ast.Number():
-                return Type.NUMBER
+            case ast.Number(value=value):
+                return Type.MONEY if isinstance(value, Money) else Type.NUMBER
             case ast.String():
                 return Type.STRING
             case ast.Sore():
@@ -585,16 +586,15 @@ class _Analyzer:
                     return None
                 if all(t is Type.NUMBER for t in types):
                     return Type.NUMBER_LIST
+                if all(t in NUMERIC for t in types):
+                    return Type.MONEY_LIST                  # 100円と5：宽松的规则
                 if all(t is Type.STRING for t in types):
                     return Type.STRING_LIST
                 return Type.LIST
-            case ast.BinaryOp(left=left, right=right):
-                self._expect_number(left)
-                self._expect_number(right)
-                return Type.NUMBER
+            case ast.BinaryOp(op=op, left=left, right=right):
+                return self._arithmetic_type(expr, op, self._expect_number(left), self._expect_number(right))
             case ast.Negate(operand=operand):
-                self._expect_number(operand)
-                return Type.NUMBER
+                return self._expect_number(operand) or Type.NUMBER
         raise TypeError(f"未知のノード：{expr!r}")
 
     def _column_type(self, expr: ast.ColumnRef) -> Type | None:
@@ -614,10 +614,26 @@ class _Analyzer:
             return None
         return LIST_OF[column]
 
-    def _expect_number(self, expr: ast.Expr) -> None:
+    def _expect_number(self, expr: ast.Expr) -> Type | None:
+        """算式的一边：必须是数或金額。返回它的类型（不是数时报错并返回 None）"""
         actual = self._type_of(expr)
-        if actual is not None and actual is not Type.NUMBER:
+        if actual is not None and actual not in NUMERIC:
             self._error("E3008", expr.span, actual=self._describe_actual(expr, actual))
+            return None
+        return actual
+
+    def _arithmetic_type(self, expr: ast.BinaryOp, op: str, left, right) -> Type:
+        """金額与数宽松互通（语法设计 12.4）：有一方是金額，结果就是金額。
+        金額÷金額 是比例（数）；金額×金額、数÷金額 没有意义"""
+        left_money, right_money = left is Type.MONEY, right is Type.MONEY
+        if op == "*" and left_money and right_money:
+            self._error("E3043", expr.span)
+        if op == "/":
+            if right_money and not left_money and left is not None:
+                self._error("E3044", expr.span)
+            if left_money and right_money:
+                return Type.NUMBER
+        return Type.MONEY if left_money or right_money else Type.NUMBER
 
     def _describe_actual(self, expr: ast.Expr, actual: ValueType) -> str:
         if isinstance(expr, ast.PreviousResult):
@@ -652,7 +668,7 @@ def _table_or_none(t):
 def _describe_types(types: frozenset) -> str:
     if types == {TableType}:
         return "表"
-    if types <= {Type.NUMBER, Type.NUMBER_LIST}:
+    if types <= NUMERIC | NUMERIC_LISTS:
         return "数"
     return "か".join(t.value for t in types)
 

@@ -25,9 +25,11 @@ from dandori.frontend.lexicon import Entry, Lexicon
 from dandori.frontend.normalize import normalize
 from dandori.frontend.source import Source, Span
 from dandori.frontend.tokens import Token, TokenKind
+from dandori.money import Money
 
 _WHITESPACE = set(" \t\r\n　")
 _DIGITS = set("0123456789")
+_UNITS = {"億": 10 ** 8, "万": 10 ** 4, "千": 10 ** 3, "百": 10 ** 2}
 # 比较符号：先试两个字符的，再试一个字符的。值是标准写法
 _COMPARE = {
     ">=": ">=", "<=": "<=", "<>": "<>", "!=": "<>",
@@ -67,7 +69,7 @@ class _Lexer:
 
             if ch in _WHITESPACE:
                 self.pos += 1
-            elif ch in _DIGITS:
+            elif ch in _DIGITS or (ch == "¥" and self._peek(1) in _DIGITS):
                 self._number()
             elif ch == "「":
                 self._string()
@@ -101,22 +103,62 @@ class _Lexer:
     # ---------- 各种 Token ----------
 
     def _number(self) -> None:
-        """整数或小数：100、3.14
+        """数和金額：100、3.14、1,000、100万、1億2000万円、¥1,000、3千円（语法设计 12.3）
 
         小数用 Decimal 而不是 float：业务语言处理的是钱，
         float 的 0.1 + 0.2 = 0.30000000000000004，这在会计上不能接受。
+
+        单位：按"组"读取，每组是"数 + 单位"。连写的单位相乘（1千万 ＝ 1 × 千 × 万），
+        各组的单位必须从大到小（1億2000万 可以，2000万1億 不行）。
         """
+        start = self.pos
+        yen = self._peek() == "¥"
+        if yen:
+            self.pos += 1
+
+        total = 0
+        previous_unit = None
+        ok = True
+        while True:
+            n = self._plain_number()
+            unit = 1
+            while self._peek() in _UNITS:
+                unit *= _UNITS[self._peek()]
+                self.pos += 1
+            if previous_unit is not None and unit >= previous_unit:
+                ok = False                             # 2000万1億：单位没有从大到小
+            total += n * unit
+            previous_unit = unit
+            # 1億2000万：单位后面还跟着数字，继续读下一组
+            if unit == 1 or self._peek() not in _DIGITS:
+                break
+
+        if self._peek() == "円":
+            yen = True
+            self.pos += 1
+
+        if not ok:
+            self.errors.append(Diagnostic.make("E1011", Span(start, self.pos),
+                                               word=self.source.text[start:self.pos]))
+        if isinstance(total, Decimal) and total == total.to_integral_value():
+            total = int(total)                         # 1.5万 → 15000
+        value = Money(total) if yen else total
+        self._emit(TokenKind.NUMBER, start, self.pos, value=value, advance=False)
+
+    def _plain_number(self) -> int | Decimal:
+        """不带单位的数：100、1,000、3.14。千位分隔符只在后面恰好跟着 3 位数字时才算"""
         start = self.pos
         while self._peek() in _DIGITS:
             self.pos += 1
+        while (self._peek() == "," and all(self._peek(i) in _DIGITS for i in (1, 2, 3))
+               and self._peek(4) not in _DIGITS):
+            self.pos += 4
         if self._peek() == "." and self._peek(1) in _DIGITS:
             self.pos += 1
             while self._peek() in _DIGITS:
                 self.pos += 1
-
-        digits = self.text[start:self.pos]
-        value = Decimal(digits) if "." in digits else int(digits)
-        self._emit(TokenKind.NUMBER, start, self.pos, value=value, advance=False)
+        digits = self.text[start:self.pos].replace(",", "")
+        return Decimal(digits) if "." in digits else int(digits)
 
     def _string(self) -> None:
         """「」中间的内容。不能跨行，没有 」 时报错，但仍然产生 Token 以便后续继续检查"""
@@ -257,7 +299,7 @@ class _Lexer:
 
     def _recognizable_at(self, i: int) -> bool:
         ch = self.text[i]
-        return (ch in _WHITESPACE or ch in _DIGITS or ch in _SYMBOLS or ch in _COMPARE or ch == "「"
+        return (ch in _WHITESPACE or ch in _DIGITS or ch in _SYMBOLS or ch in _COMPARE or ch in "「¥"
                 or self.lexicon.matches_at(self.text, i))
 
     def _between_numbers(self) -> bool:
