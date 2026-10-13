@@ -154,12 +154,17 @@ class _Lexer:
             self.pos += 1
         elif self._peek() == "日" and not yen:
             self.pos += 1                              # 30日：天数，就是数 30（语法设计 13.2）
+        elif self._peek() == "%" and not yen:
+            unit_kind = "%"                             # 10% ＝ 0.1（语法设计 14.8）
+            self.pos += 1
 
         if not ok:
             self.errors.append(Diagnostic.make("E1011", Span(start, self.pos),
                                                word=self.source.text[start:self.pos]))
         if isinstance(total, Decimal) and total == total.to_integral_value():
             total = int(total)                         # 1.5万 → 15000
+        if unit_kind == "%":
+            total, unit_kind = values_percent(total), None
         if unit_kind is not None and not isinstance(total, int):
             self.errors.append(Diagnostic.make("E1013", Span(start, self.pos),
                                                word=self.source.text[start:self.pos]))
@@ -399,3 +404,9 @@ def _is_valid_term(word: str) -> bool:
     return (word != ""
             and (_is_name_start(word[0]) or _is_hiragana(word[0]))
             and all(_is_name_char(c) or _is_hiragana(c) for c in word))
+
+
+def values_percent(n):
+    """10% → 0.1、8% → 0.08（精确的 Decimal）"""
+    result = Decimal(n) / 100
+    return int(result) if result == result.to_integral_value() else result
