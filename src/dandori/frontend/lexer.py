@@ -5,9 +5,13 @@
     2. 数字 → 一直读到不是数字为止
     3. 「   → 一直读到 」为止
     4. 记号 → + - * / ( ) 、 。
-    5. 查词典，取最长匹配 → 助词、动词、指示语、キーワード
+    5. 查词典，取最长匹配 → 助词、动词、指示语、キーワード、声明过的用語
     6. 汉字、片假名、英文字母开头 → 名字（语法设计 5.3）
     7. 都不是 → 记一条错误，留下"不明"占位 Token，继续往后扫
+
+在这之前，先读程序开头的用語声明（语法设计 5.7）：
+    用語：売り上げ、お客様。
+声明的词被加进这个程序专用的词典，之后就能像其他词一样被认出来。
 
 遇到错误不立刻停下，而是记下来接着扫，这样一次就能报出所有错误。
 """
@@ -17,7 +21,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from dandori.errors import Diagnostic
-from dandori.frontend.lexicon import Lexicon
+from dandori.frontend.lexicon import Entry, Lexicon
 from dandori.frontend.normalize import normalize
 from dandori.frontend.source import Source, Span
 from dandori.frontend.tokens import Token, TokenKind
@@ -43,13 +47,15 @@ def tokenize(source: Source, lexicon: Lexicon) -> tuple[list[Token], list[Diagno
 class _Lexer:
     def __init__(self, source: Source, lexicon: Lexicon):
         self.source = source
-        self.lexicon = lexicon
+        self.lexicon = lexicon.copy()        # 用語声明只加进这个程序自己的词典
         self.text = normalize(source.text)   # 扫描正規化后的文本
         self.pos = 0
         self.tokens: list[Token] = []
         self.errors: list[Diagnostic] = []
 
     def run(self) -> tuple[list[Token], list[Diagnostic]]:
+        self._declarations()
+
         while self.pos < len(self.text):
             ch = self.text[self.pos]
 
@@ -64,10 +70,17 @@ class _Lexer:
             elif ch == "ー" and self._between_numbers():
                 self.errors.append(Diagnostic.make("E1003", Span(self.pos, self.pos + 1)))
                 self.pos += 1
+            elif self._at_declaration():
+                # 用語声明只能写在开头：断词器必须在用到之前就认识这些词
+                self.errors.append(Diagnostic.make("E1007", Span(self.pos, self.pos + 2)))
+                self._read_declaration(register=False)
             elif match := self.lexicon.longest_match(self.text, self.pos):
                 surface, entry = match
-                self._emit(entry.kind, self.pos, self.pos + len(surface),
-                           verb_id=entry.verb_id, lemma=entry.lemma, form=entry.form)
+                if entry.kind is TokenKind.NAME:
+                    self._name()             # 声明过的用語：可能还和别的名字连在一起
+                else:
+                    self._emit(entry.kind, self.pos, self.pos + len(surface),
+                               verb_id=entry.verb_id, lemma=entry.lemma, form=entry.form)
             elif _is_name_start(ch):
                 self._name()
             else:
@@ -118,12 +131,20 @@ class _Lexer:
         - 遇到平假名就结束：平假名留给助词和送假名
         - 词典优先：名字中间某处能匹配上词典里的词，名字就在那里结束，
           所以「合計表示する」会切成「合計」「表示する」
+
+        声明过的用語可以出现在名字的任何位置：「売り上げ合計」「合計売り上げ」都是一个名字。
         """
         start = self.pos
-        self.pos += 1
-        while (self.pos < len(self.text) and _is_name_char(self.text[self.pos])
-               and not self.lexicon.matches_at(self.text, self.pos)):
-            self.pos += 1
+        while self.pos < len(self.text):
+            match = self.lexicon.longest_match(self.text, self.pos)
+            if match and match[1].kind is TokenKind.NAME:
+                self.pos += len(match[0])    # 整个用語都算名字的一部分
+            elif match and self.pos > start:
+                break                        # 词典优先
+            elif _is_name_char(self.text[self.pos]):
+                self.pos += 1
+            else:
+                break
 
         # 名字后面紧跟着平假名，而且那里不是助词等词典里的词：名字里混进了平假名
         if _is_hiragana(self._peek()) and not self.lexicon.matches_at(self.text, self.pos):
@@ -151,6 +172,62 @@ class _Lexer:
             self.errors.append(Diagnostic.make("E1001", span, word=word))
         # 留下占位 Token，让構文解析知道"这里有个词"，而不是凭空消失导致连锁报错
         self._emit(TokenKind.UNKNOWN, start, self.pos, advance=False)
+
+    # ---------- 用語声明 ----------
+
+    def _declarations(self) -> None:
+        """程序开头的用語声明，可以有多行"""
+        while True:
+            while self._peek() in _WHITESPACE:
+                self.pos += 1
+            if not self._at_declaration():
+                return
+            self._read_declaration(register=True)
+
+    def _at_declaration(self) -> bool:
+        return self.text.startswith("用語", self.pos) and self._peek(2) in (":", "：")
+
+    def _read_declaration(self, register: bool) -> None:
+        """用語：売り上げ、お客様。"""
+        start = self.pos
+        self.pos += 3                        # 用語：
+        word_start = self.pos
+        words = []
+        while self.pos < len(self.text) and self.text[self.pos] != "。":
+            if self.text[self.pos] == "、":
+                words.append((word_start, self.pos))
+                word_start = self.pos + 1
+            self.pos += 1
+        words.append((word_start, self.pos))
+
+        if self.pos < len(self.text):
+            self.pos += 1                    # 。
+        else:
+            self.errors.append(Diagnostic.make("E1008", Span(start, start + 3)))
+
+        if register:
+            for word_start, word_end in words:
+                self._declare(word_start, word_end)
+
+    def _declare(self, start: int, end: int) -> None:
+        # 去掉词前后的空白和换行
+        while start < end and self.text[start] in _WHITESPACE:
+            start += 1
+        while end > start and self.text[end - 1] in _WHITESPACE:
+            end -= 1
+        word = self.text[start:end]
+        if word == "":
+            return                           # 「答え、、お客様」「答え、。」：多打的「、」不影响意思
+        span = Span(start, end)
+
+        if not _is_valid_term(word):
+            self.errors.append(Diagnostic.make("E1005", span, word=self.source.text[start:end]))
+            return
+        existing = self.lexicon.get(word)
+        if existing is None:
+            self.lexicon.add(word, Entry(TokenKind.NAME))
+        elif existing.kind is not TokenKind.NAME:   # 和助词、动词等重名；重复声明则无妨
+            self.errors.append(Diagnostic.make("E1006", span, word=word))
 
     # ---------- 小工具 ----------
 
@@ -208,12 +285,20 @@ def _name_hint(word: str) -> str:
     売り上げ → 売上、支払い → 支払、振り込み → 振込
     以平假名开头的（お客様）去掉后意思会变，只给一般性的提示。
     """
+    declare = f"最初に「用語：{word}。」と書いてください"
     if _is_name_start(word[0]):
-        return f"「{''.join(c for c in word if not _is_hiragana(c))}」のように書いてください"
-    return "漢字かカタカナで書いてください"
+        return f"「{''.join(c for c in word if not _is_hiragana(c))}」のように書くか、{declare}"
+    return f"漢字かカタカナで書くか、{declare}"
 
 
 
 def _looks_like_verb(word: str) -> bool:
     """以う段假名或「て・で」结尾的，多半是写错的动词（「計算する」「振り込む」），而不是名字"""
     return word[-1] in "うくぐすつぬぶむるてで"
+
+
+def _is_valid_term(word: str) -> bool:
+    """用語：汉字、片假名、平假名、字母、数字组成，不能以数字等开头"""
+    return (word != ""
+            and (_is_name_start(word[0]) or _is_hiragana(word[0]))
+            and all(_is_name_char(c) or _is_hiragana(c) for c in word))

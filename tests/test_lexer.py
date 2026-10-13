@@ -148,9 +148,9 @@ def test_assignment_tokens(lexicon):
 
 
 @pytest.mark.parametrize("word, hint", [
-    ("売り上げ", "「売上」のように書いてください"),
-    ("支払い", "「支払」のように書いてください"),
-    ("お客様", "漢字かカタカナで書いてください"),
+    ("売り上げ", "「売上」のように書くか、最初に「用語：売り上げ。」と書いてください"),
+    ("支払い", "「支払」のように書くか、最初に「用語：支払い。」と書いてください"),
+    ("お客様", "漢字かカタカナで書くか、最初に「用語：お客様。」と書いてください"),
 ])
 def test_hiragana_in_name(lexicon, word, hint):
     tokens, errors = lex(f"{word}を表示する。", lexicon)
@@ -163,3 +163,68 @@ def test_hiragana_in_name(lexicon, word, hint):
 def test_misspelled_verb_is_not_reported_as_name(lexicon, word):
     _, errors = lex(f"100を{word}。", lexicon)
     assert [e.code for e in errors] == ["E1001"]
+
+
+# ---------- 阶段 2-1：用語声明 ----------
+
+def names_in(code, lexicon):
+    tokens, errors = lex(code, lexicon)
+    return [t.value for t in tokens if t.kind is K.NAME], [e.code for e in errors]
+
+
+def test_declared_terms(lexicon):
+    names, errors = names_in("用語：売り上げ、お客様。\n売り上げとお客様を表示する。", lexicon)
+    assert errors == []
+    assert names == ["売り上げ", "お客様"]
+
+
+def test_declaration_emits_no_tokens(lexicon):
+    tokens, _ = lex("用語：答え。\n100を表示する。", lexicon)
+    assert tokens[0].kind is K.NUMBER
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("売り上げ合計を表示する。", ["売り上げ合計"]),      # 用語在名字开头
+    ("合計売り上げを表示する。", ["合計売り上げ"]),      # 用語在名字后面
+    ("前月売り上げ合計を表示する。", ["前月売り上げ合計"]),
+])
+def test_declared_term_inside_name(lexicon, code, expected):
+    names, errors = names_in("用語：売り上げ。" + code, lexicon)
+    assert errors == []
+    assert names == expected
+
+
+def test_declared_term_still_respects_dictionary(lexicon):
+    tokens, errors = lex("用語：売り上げ。売り上げ表示する。", lexicon)
+    assert errors == []
+    assert [(t.kind, t.text) for t in tokens[:2]] == [(K.NAME, "売り上げ"), (K.VERB, "表示する")]
+
+
+def test_multiple_declarations_and_halfwidth_colon(lexicon):
+    names, errors = names_in("用語:答え。\n用語：お客様、、見積もり、。\n答えとお客様と見積もりを表示する。", lexicon)
+    assert errors == []
+    assert names == ["答え", "お客様", "見積もり"]
+
+
+def test_declaration_is_per_program(lexicon):
+    lex("用語：答え。", lexicon)
+    _, errors = lex("答えを表示する。", lexicon)   # 另一个程序：没有声明
+    assert [e.code for e in errors] == ["E1004"]
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("用語：1番。", ["E1005"]),
+    ("用語：売上 合計。", ["E1005"]),
+    ("用語：足す。", ["E1006"]),
+    ("用語：を。", ["E1006"]),
+    ("100を表示する。用語：答え。", ["E1007"]),
+    ("用語：答え", ["E1008"]),
+])
+def test_declaration_errors(lexicon, code, expected):
+    _, errors = lex(code, lexicon)
+    assert [e.code for e in errors] == expected
+
+
+def test_late_declaration_is_not_registered(lexicon):
+    _, errors = lex("100を表示する。用語：答え。答えを表示する。", lexicon)
+    assert [e.code for e in errors] == ["E1007", "E1004"]

@@ -1,9 +1,10 @@
-"""词典（语法设计 1.3、1.4）
+"""词典（语法设计 1.3、1.4、5.7）
 
 日语没有空格，断词要靠"查词典"：在当前位置找能匹配上的最长的词。
-词典的内容有两个来源：
-- 语言核心的固定词：助词、指示语
+词典的内容有三个来源：
+- 语言核心的固定词：助词、指示语、キーワード
 - 注册表里的动词：由辞书形 + 活用类型自动生成全部活用形
+- 程序开头的用語声明：带平假名的名字（売り上げ、お客様）
 """
 
 from __future__ import annotations
@@ -54,6 +55,16 @@ class Lexicon:
 
     def matches_at(self, text: str, pos: int) -> bool:
         return self.longest_match(text, pos) is not None
+
+    def get(self, surface: str) -> Entry | None:
+        return self._entries.get(surface)
+
+    def copy(self) -> Lexicon:
+        """每个程序在副本上添加自己的用語，不影响共享的词典"""
+        new = Lexicon()
+        new._entries = dict(self._entries)
+        new._max_len = self._max_len
+        return new
 
     @classmethod
     def from_registry(cls, registry: Registry) -> Lexicon:

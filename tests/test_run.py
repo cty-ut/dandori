@@ -114,3 +114,16 @@ def test_variables_example_file():
     output, errors = run_code(code)
     assert errors == []
     assert output == ["100", "1100", "800", "300"]
+
+
+def test_declared_terms_as_variables():
+    output, errors = run_code("""
+        用語：売り上げ、お客様。
+        売り上げは0とする。
+        売り上げに500を足して、売り上げとする。
+        お客様は「山田商事」とする。
+        お客様を表示する。
+        売り上げを表示する。
+    """)
+    assert errors == []
+    assert output == ["山田商事", "500"]
