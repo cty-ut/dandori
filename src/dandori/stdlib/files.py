@@ -26,7 +26,7 @@ def _load(file_name: str, base_dir: Path):
         raise VerbError(e.code, **e.params) from None
 
 
-def infer_yomikomu(args: dict[str, ast.Expr], ctx: InferContext):
+def infer_yomikomu(args: dict[str, ast.Expr], types: dict, ctx: InferContext):
     """编译时：读取文件，确定列定义"""
     path = args.get("path")
     if not isinstance(path, ast.String):

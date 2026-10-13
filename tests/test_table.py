@@ -62,6 +62,31 @@ def test_number_formats_and_types(tmp_path):
     assert table.column("d") == [Decimal("3.50"), 3]      # 3.0 → 3
 
 
+@pytest.mark.parametrize("cells, expected", [
+    (["00123", "00456"], ["00123", "00456"]),           # 取引先コード
+    (["0600001", "1000005"], ["0600001", "1000005"]),   # 郵便番号：一个以 0 开头，整列都是文字列
+    (["0312345678"], ["0312345678"]),                   # 電話番号
+    (["０１２３"], ["０１２３"]),                       # 全角也一样，保留原文
+])
+def test_leading_zero_codes_are_strings(tmp_path, cells, expected):
+    text = "コード\n" + "\n".join(cells) + "\n"
+    table = read_csv(write(tmp_path, "a.csv", text), "a.csv")
+    assert table.type.columns == (("コード", Type.STRING),)
+    assert table.column("コード") == expected
+
+
+@pytest.mark.parametrize("cells, expected", [
+    (["0", "10"], [0, 10]),                             # 「0」本身是数
+    (["0.5", "1"], [Decimal("0.5"), 1]),               # 小数
+    (["-0.25"], [Decimal("-0.25")]),
+])
+def test_zero_and_decimals_are_still_numbers(tmp_path, cells, expected):
+    text = "値\n" + "\n".join(cells) + "\n"
+    table = read_csv(write(tmp_path, "a.csv", text), "a.csv")
+    assert table.type.columns == (("値", Type.NUMBER),)
+    assert table.column("値") == expected
+
+
 def test_mixed_column_is_string(tmp_path):
     table = read_csv(write(tmp_path, "a.csv", "a\n1\nx\n"), "a.csv")
     assert table.type.columns == (("a", Type.STRING),)
@@ -202,7 +227,8 @@ def test_blank_in_calculation_reports_row(tmp_path):
     errors = run(Source(READ + "明細の金額を足して表示する。"),
                  Context(output=output.append, base_dir=tmp_path))
     assert output == []
-    assert [e.message for e in errors] == ["計算する値に空欄があります（明細.csv の 3行目）"]
+    assert errors[0].message.startswith("計算する値に空欄があります（明細.csv の 3行目）。")
+    assert "空欄でないもの" in errors[0].message          # 提示处理方法
 
 
 def test_file_changed_between_compile_and_run(tmp_path):

@@ -51,6 +51,34 @@ class ColumnRef:
 
 
 @dataclass(frozen=True)
+class Blank:
+    """空欄：只能用在条件（金額が空欄）中（语法设计 9.7）"""
+    span: Span
+
+
+@dataclass(frozen=True)
+class RowFilter:
+    """条件名词：金額が10000以上のもの。对表的每一行求值"""
+    condition: Condition
+    span: Span
+
+
+@dataclass(frozen=True)
+class SortKey:
+    """排序依据：金額の大きい順"""
+    target: Expr
+    descending: bool
+    span: Span
+
+
+@dataclass(frozen=True)
+class BlanksOf:
+    """空欄的指定：明細の金額の空欄"""
+    target: Expr
+    span: Span
+
+
+@dataclass(frozen=True)
 class ListExpr:
     """用「と」连起来的值：100と200"""
     items: tuple[Expr, ...]
@@ -85,7 +113,7 @@ class ErrorExpr:
 
 
 Expr = (Number | String | Sore | Name | ColumnRef | ListExpr | BinaryOp | Negate
-        | PreviousResult | ErrorExpr)
+        | PreviousResult | ErrorExpr | Blank | RowFilter | SortKey | BlanksOf)
 
 
 # ---------- 句子结构 ----------
@@ -207,6 +235,16 @@ class Program:
 
 # ---------- 打印成树（调试用） ----------
 
+def column_name(expr) -> str | None:
+    """写列名的位置（取り出す、ごとに、排序依据）：名字或「」都表示列名"""
+    from dandori.frontend.normalize import normalize
+    if isinstance(expr, Name):
+        return expr.name
+    if isinstance(expr, String):
+        return normalize(expr.value)
+    return None
+
+
 COMPARISON_WORDS = {">=": "以上", "<=": "以下", "<": "未満", ">": "を超える", "=": "等しい", "<>": "でない"}
 
 
@@ -280,6 +318,14 @@ def _describe(node) -> tuple[str, list]:
             return f"名前 {name}", []
         case ColumnRef(table=table, column=column):
             return f"列 {column}", [table]
+        case Blank():
+            return "空欄", []
+        case RowFilter(condition=condition):
+            return "のもの", [condition]
+        case SortKey(target=target, descending=descending):
+            return "大きい順" if descending else "小さい順", [target]
+        case BlanksOf(target=target):
+            return "の空欄", [target]
         case PreviousResult():
             return "（前の結果）", []
         case ErrorExpr():

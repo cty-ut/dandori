@@ -23,7 +23,7 @@ from pathlib import Path
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.source import Source, Span
-from dandori.plugin.registry import InferContext, Param, Registry, VerbError, VerbSpec
+from dandori.plugin.registry import InferContext, Param, ParamKind, Registry, VerbError, VerbSpec
 from dandori.types import LIST_OF, TableType, Type, ValueType
 
 # "有结果，但类型未知"（如文件读取失败）。与 None（没有结果）区分开，避免后续连锁报错
@@ -118,6 +118,8 @@ class _Analyzer:
         self.defined: set[str] = set()
         self.loop_vars: set[str] = set()         # 正在执行的循环的变量：不能被赋值
         self.ended_loop_vars: set[str] = set()   # 用过的循环变量：在循环外使用时给出专门的提示
+        # 表格操作的条件中：名字被理解为这张表的列（语法设计 9.4）。(表的类型, 给人看的表名)
+        self.column_scope: tuple[TableType, str] | None = None
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
         return BoundProgram(self._statements(program.sentences)), self.errors
@@ -223,6 +225,16 @@ class _Analyzer:
             self._check_comparison(condition)
 
     def _check_comparison(self, comparison: ast.Comparison) -> None:
+        # 与空欄比较：只能用「が空欄」「が空欄でない」（语法设计 9.7）
+        blank_sides = [isinstance(side, ast.Blank) for side in (comparison.left, comparison.right)]
+        if any(blank_sides):
+            if comparison.op not in ("=", "<>"):
+                self._error("E3032", comparison.span)
+            for side, is_blank in zip((comparison.left, comparison.right), blank_sides):
+                if not is_blank:
+                    self._type_of(side)
+            return
+
         left = self._type_of(comparison.left)
         right = self._type_of(comparison.right)
 
@@ -290,13 +302,16 @@ class _Analyzer:
             else:
                 bound[param.name] = arg.value
 
-        # 2. 上一步的结果填进"唯一空着的槽"（语法设计 3.3）
+        # 2. 上一步的结果填入空着的槽（语法设计 3.3，9.6 细化）
         fill_failed = False
         if can_fill and not any(_uses_sore(arg.value) for arg in step.args):
-            empty = [p for p in spec.params if p.name not in bound]
-            if len(empty) == 1:
-                bound[empty[0].name] = ast.PreviousResult(step.verb.span)
-            elif not empty:
+            # 只有"值"类的槽参与；必需槽优先，必需槽都满了再看可选槽
+            empty = [p for p in spec.params if p.kind is ParamKind.VALUE and p.name not in bound]
+            required = [p for p in empty if p.required]
+            target = required if required else empty
+            if len(target) == 1:
+                bound[target[0].name] = ast.PreviousResult(step.verb.span)
+            elif not target:
                 self._error("E3005", step.span)
             else:
                 self._error("E3004", step.verb.span)
@@ -308,18 +323,28 @@ class _Analyzer:
             for param in missing:
                 self._error("E3003", step.verb.span, verb=verb, particle=param.particle)
 
-        # 4. 类型检查
+        # 4. 类型检查。先查"值""列"等自己就有类型的槽，
+        #    再查条件、列名、排序的槽：它们的列来自前者的表（columns_of）
+        errors_before = len(self.errors)
+        types: dict[str, ValueType | None] = {}
         for param in spec.params:
-            if param.name in bound:
-                self._check_arg(spec, param, bound[param.name])
+            if param.name in bound and param.kind in (ParamKind.VALUE, ParamKind.COLUMN, ParamKind.BLANKS):
+                types[param.name] = self._check_arg(spec, param, bound[param.name])
+        for param in spec.params:
+            if param.name in bound and param.kind in (ParamKind.CONDITION, ParamKind.COLUMNS, ParamKind.SORT):
+                source = bound.get(param.columns_of)
+                # 列来自的那个槽不是表时（已经报过 E3007），不再检查列名
+                scope = (_table_or_none(types.get(param.columns_of)), self._table_label(source))
+                self._check_column_arg(spec, param, bound[param.name], scope)
 
-        # 5. 结果的类型。取决于参数的（「読み込む」），由动词定义的 infer 在编译时决定
+        # 5. 结果的类型。取决于参数的（「読み込む」「合計する」等），由动词定义的 infer 在编译时决定
         result = spec.returns
         if spec.infer is not None:
             result = _UNKNOWN
-            if not missing and not fill_failed:
+            if not missing and not fill_failed and len(self.errors) == errors_before:
                 try:
-                    result = spec.infer(bound, self.infer_context)
+                    inferred = spec.infer(bound, types, self.infer_context)
+                    result = _UNKNOWN if inferred is None else inferred
                 except VerbError as e:
                     span = next(iter(bound.values())).span if bound else step.span
                     self._error(e.code, span, **e.params)
@@ -329,12 +354,88 @@ class _Analyzer:
 
     # ---------- 类型 ----------
 
-    def _check_arg(self, spec: VerbSpec, param: Param, expr: ast.Expr) -> None:
+    def _check_arg(self, spec: VerbSpec, param: Param, expr: ast.Expr) -> ValueType | None:
+        """"值""列""空欄指定"的槽。返回类型（列、空欄指定返回所在的表的类型），供 columns_of 和 infer 使用"""
+        if param.kind is ParamKind.COLUMN:
+            if not isinstance(expr, ast.ColumnRef):
+                return self._wrong_kind(spec, param, expr)
+            self._check_accepts(spec, param, expr, self._type_of(expr))
+            return _table_or_none(self._type_of(expr.table))
+
+        if param.kind is ParamKind.BLANKS:
+            if not (isinstance(expr, ast.BlanksOf) and isinstance(expr.target, ast.ColumnRef)):
+                return self._wrong_kind(spec, param, expr)
+            self._type_of(expr.target)                       # 检查列名
+            return _table_or_none(self._type_of(expr.target.table))
+
+        if isinstance(expr, (ast.RowFilter, ast.SortKey, ast.BlanksOf)):
+            return self._wrong_kind(spec, param, expr)
         actual = self._type_of(expr)
-        if actual is not None and param.accepts is not None and actual not in param.accepts:
-            self._error("E3007", expr.span, verb=spec.dictionary_form, particle=param.particle,
-                        expected=_describe_types(param.accepts),
-                        actual=self._describe_actual(expr, actual))
+        self._check_accepts(spec, param, expr, actual)
+        return actual
+
+    def _check_accepts(self, spec: VerbSpec, param: Param, expr: ast.Expr, actual) -> None:
+        if actual is None or param.accepts is None:
+            return
+        if actual in param.accepts or (isinstance(actual, TableType) and TableType in param.accepts):
+            return
+        self._error("E3007", expr.span, verb=spec.dictionary_form, particle=param.particle,
+                    expected=_describe_types(param.accepts),
+                    actual=self._describe_actual(expr, actual))
+
+    def _check_column_arg(self, spec: VerbSpec, param: Param, expr: ast.Expr, scope) -> None:
+        """条件、列名、排序的槽：名字被理解为 scope 这张表的列（语法设计 9.4）"""
+        table, label = scope
+        if param.kind is ParamKind.CONDITION:
+            if not isinstance(expr, ast.RowFilter):
+                self._wrong_kind(spec, param, expr)
+            elif table is not None:
+                previous, self.column_scope = self.column_scope, (table, label)
+                self._check_condition(expr.condition)
+                self.column_scope = previous
+            return
+
+        if param.kind is ParamKind.SORT:
+            if not isinstance(expr, ast.SortKey):
+                self._wrong_kind(spec, param, expr)
+                return
+            names = [expr.target]
+        else:
+            names = list(expr.items) if isinstance(expr, ast.ListExpr) else [expr]
+
+        for name in names:
+            if ast.column_name(name) is None:
+                self._error("E3030", name.span, verb=spec.dictionary_form, particle=param.particle)
+            elif table is not None:
+                self._column_name(name, table, label)
+
+    def _column_name(self, expr: ast.Name | ast.String, table: TableType, label: str) -> ValueType | None:
+        """作为列名的名字或「」：必须是这张表的列。名字不能和变量重名（「」本来就不是变量）"""
+        name = ast.column_name(expr)
+        column = table.column(name)
+        if column is None:
+            self._no_such_column(name, expr.span, table, label)
+            return None
+        if isinstance(expr, ast.Name) and name in self.symbols:
+            self._error("E3029", expr.span, name=name)
+        return column
+
+    def _no_such_column(self, column: str, span: Span, table: TableType, label: str) -> None:
+        close = difflib.get_close_matches(column, table.names, n=1, cutoff=0.5)
+        hint = f"「{close[0]}」のことですか？" if close else f"列：{'、'.join(table.names)}"
+        self._error("E3025", span, table=label, column=column, hint=hint)
+
+    def _wrong_kind(self, spec: VerbSpec, param: Param, expr: ast.Expr) -> None:
+        self._error("E3031", expr.span, verb=spec.dictionary_form, particle=param.particle,
+                    expected=_KIND_EXAMPLES[param.kind])
+        return None
+
+    def _table_label(self, expr: ast.Expr | None) -> str:
+        if expr is None or isinstance(expr, (ast.PreviousResult, ast.Sore)):
+            return "前の結果"
+        if isinstance(expr, ast.ColumnRef):
+            return self._table_label(expr.table)
+        return self.source.slice(expr.span)
 
     def _type_of(self, expr: ast.Expr) -> ValueType | None:
         """推断类型。返回 None 表示"已经报过错，类型未知"，调用方就不再追加错误"""
@@ -351,6 +452,11 @@ class _Analyzer:
                 return _known(self.last_type)
             case ast.ColumnRef():
                 return self._column_type(expr)
+            case ast.Name(name=name) if self.column_scope is not None and (
+                    name in self.column_scope[0].names or name not in self.symbols):
+                # 条件中的「金額」：每一行的金额（标量）
+                table, label = self.column_scope
+                return self._column_name(expr, table, label)
             case ast.Name(name=name):
                 if name not in self.symbols:
                     self._error("E3010", expr.span, name=name)
@@ -363,6 +469,13 @@ class _Analyzer:
                         self._error("E3014", expr.span, name=name)
                 return self.symbols[name]
             case ast.ErrorExpr():
+                return None
+            case ast.Blank():
+                self._error("E3033", expr.span)
+                return None
+            case ast.RowFilter() | ast.SortKey() | ast.BlanksOf():
+                # 条件名词、排序依据等只能写在表格操作的对应参数里
+                self._error("E2008", expr.span, word=self.source.slice(expr.span))
                 return None
             case ast.ListExpr(items=items):
                 types = [self._type_of(item) for item in items]
@@ -408,8 +521,9 @@ class _Analyzer:
         if isinstance(expr, ast.PreviousResult):
             return f"前の結果は{actual.value}です"
         text = self.source.slice(expr.span)
-        if isinstance(expr, ast.String):
-            quoted = text                     # 本身就带着「」
+        if isinstance(expr, ast.String) or (text.startswith("「") and text.endswith("」")
+                                            and text.count("「") == 1):
+            quoted = text                     # 本身就带着「」（字符串，或用「」写的列名）
         elif "「" in text:
             quoted = f"『{text}』"            # 引用里还有「」时，外层用『』
         else:
@@ -420,7 +534,22 @@ class _Analyzer:
         self.errors.append(Diagnostic.make(code, span, **params))
 
 
-def _describe_types(types: frozenset[Type]) -> str:
+_KIND_EXAMPLES = {
+    ParamKind.CONDITION: "「金額が10000以上のもの」のような条件",
+    ParamKind.SORT: "「金額の大きい順」のような並べ方",
+    ParamKind.COLUMN: "「明細の金額」のような列",
+    ParamKind.BLANKS: "「明細の金額の空欄」",
+    ParamKind.VALUE: "値",
+}
+
+
+def _table_or_none(t):
+    return t if isinstance(t, TableType) else None
+
+
+def _describe_types(types: frozenset) -> str:
+    if types == {TableType}:
+        return "表"
     if types <= {Type.NUMBER, Type.NUMBER_LIST}:
         return "数"
     return "か".join(t.value for t in types)

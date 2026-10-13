@@ -14,12 +14,13 @@
     代入文    ＝ 名前 は 名詞句 とする 。                      → _assignment()
     手順文    ＝ 手順 { 、? 手順 } [ 、? 名前 とする ] 。       → _sentence()
     手順     ＝ { 引数句 } 動詞                              → _step()
-    引数句    ＝ 名詞句 助詞                                  → _arg()
+    引数句    ＝ ( 条件名詞 | 名詞句 ) 助詞                      → _arg()
+    条件名詞  ＝ 条件 ( のもの | もの )                          （金額が10000以上のもの）
     名詞句    ＝ 式 { と 式 }                                 → _noun_phrase()
     式       ＝ 項 { (+|-) 項 }                              → _expr()
     項       ＝ 因子 { (×|÷) 因子 }                          → _term()
-    因子     ＝ 基本因子 { の ( 名前 | 文字列 ) }              → _factor()
-    基本因子  ＝ 数 | 文字列 | それ | 名前 | ( 式 ) | - 因子     → _primary()
+    因子     ＝ 基本因子 { の ( 名前 | 文字列 | 空欄 | 大きい順 | 小さい順 ) }   → _factor()
+    基本因子  ＝ 数 | 文字列 | それ | その 列名 | 名前 | 空欄 | ( 式 ) | - 因子 → _primary()
 
 出错时的策略：一句话里出了错，就跳到下一个「。」，从下一句继续解析。
 这样一次就能报出整个程序里的所有错误。
@@ -40,6 +41,8 @@ _LOOP_KEYWORDS = ("繰り返して", "回繰り返して")
 # 判断一句话是不是繰り返し文时，遇到这些就可以停止往后看
 _NOT_LOOP_KEYWORDS = ("もし", "ならば", "とする") + _BLOCK_KEYWORDS
 _COMPARISON_KEYWORDS = {"以上": ">=", "以下": "<=", "未満": "<", "を超える": ">", "でない": "<>"}
+_MONO_KEYWORDS = ("のもの", "もの")
+_SORT_KEYWORDS = {"大きい順": True, "小さい順": False}   # 是否降序
 
 
 def parse(tokens: list[Token], source: Source) -> tuple[ast.Program, list[Diagnostic]]:
@@ -369,8 +372,11 @@ class _Parser:
         return ast.Step(tuple(args), verb, Span(start, token.span.end))
 
     def _arg(self) -> ast.Arg:
-        """引数句 ＝ 名詞句 助詞"""
-        value = self._noun_phrase()
+        """引数句 ＝ ( 条件名詞 | 名詞句 ) 助詞"""
+        if self._row_condition_ahead():
+            value = self._row_filter()
+        else:
+            value = self._noun_phrase()
         token = self._current()
         if token.kind is K.UNKNOWN or (isinstance(value, ast.ErrorExpr) and token.kind is not K.PARTICLE):
             # 值后面是不认识的词（「3回繰り返す」），或者不认识的词后面没有助词（「100を計算する」）：
@@ -388,6 +394,40 @@ class _Parser:
             raise _SentenceError
         self._advance()
         return ast.Arg(token.text, value, Span(value.span.start, token.span.end))
+
+    def _row_condition_ahead(self) -> bool:
+        """这个参数是不是条件名词（金額が10000以上のもの）？
+
+        从参数开头往后看：跳过构成值的词之后，第一个结构性的词是「が」或比较符号，
+        而且在动词、句号之前出现「のもの」或「もの」。
+        「明細から金額が…のもの」中，从「明細」开始看时第一个结构性的词是「から」，所以不是。
+        """
+        i = self.pos
+        while (self.tokens[i].kind in (K.NAME, K.NUMBER, K.STRING, K.PRONOUN, K.OPERATOR,
+                                       K.LPAREN, K.RPAREN, K.UNKNOWN)
+               or (self.tokens[i].kind is K.PARTICLE and self.tokens[i].text == "の")):
+            i += 1
+        first = self.tokens[i]
+        if not (first.kind is K.COMPARE or (first.kind is K.PARTICLE and first.text == "が")):
+            return False
+        for token in self.tokens[i:]:
+            if token.kind is K.KEYWORD and token.text in _MONO_KEYWORDS:
+                return True
+            if token.kind in (K.VERB, K.PERIOD, K.EOF, K.COMMA) or (
+                    token.kind is K.KEYWORD and token.text in _NOT_LOOP_KEYWORDS + _LOOP_KEYWORDS):
+                return False
+        return False
+
+    def _row_filter(self) -> ast.RowFilter:
+        """条件名詞 ＝ 条件 ( のもの | もの )"""
+        start = self._current().span.start
+        condition = self._condition()
+        token = self._current()
+        if not (token.kind is K.KEYWORD and token.text in _MONO_KEYWORDS):
+            self._error("E2020", Span(start, self._previous().span.end))
+            raise _SentenceError
+        self._advance()
+        return ast.RowFilter(_columns_as_subjects(condition), Span(start, token.span.end))
 
     def _noun_phrase(self) -> ast.Expr:
         """名詞句 ＝ 式 { と 式 }
@@ -439,6 +479,12 @@ class _Parser:
         while self._current().kind is K.PARTICLE and self._current().text == "の":
             no = self._advance()
             token = self._current()
+            if token.kind is K.KEYWORD and token.text in _SORT_KEYWORDS:      # 金額の大きい順
+                self._advance()
+                return ast.SortKey(expr, _SORT_KEYWORDS[token.text], Span(expr.span.start, token.span.end))
+            if token.kind is K.KEYWORD and token.text == "空欄":              # 明細の金額の空欄
+                self._advance()
+                return ast.BlanksOf(expr, Span(expr.span.start, token.span.end))
             if token.kind is K.NAME:
                 column = token.value
             elif token.kind is K.STRING:
@@ -451,8 +497,23 @@ class _Parser:
         return expr
 
     def _primary(self) -> ast.Expr:
-        """基本因子 ＝ 数 | 文字列 | それ | 名前 | ( 式 ) | - 因子    最内层"""
+        """基本因子 ＝ 数 | 文字列 | それ | その 列名 | 名前 | 空欄 | ( 式 ) | - 因子    最内层"""
         token = self._current()
+
+        if token.kind is K.PRONOUN and token.text == "その":
+            # その金額 ＝ それの金額（语法设计 9.5）
+            self._advance()
+            column = self._current()
+            if column.kind not in (K.NAME, K.STRING):
+                self._error("E2019", token.span)
+                raise _SentenceError
+            self._advance()
+            name = column.value if column.kind is K.NAME else normalize(column.value)
+            return ast.ColumnRef(ast.Sore(token.span), name, column.span,
+                                 Span(token.span.start, column.span.end))
+        if token.kind is K.KEYWORD and token.text == "空欄":
+            self._advance()
+            return ast.Blank(token.span)
 
         if token.kind is K.NUMBER:
             self._advance()
@@ -514,6 +575,7 @@ class _Parser:
     def _starts_value(token: Token) -> bool:
         """这个 Token 能否作为一个值的开头"""
         return (token.kind in (K.NUMBER, K.STRING, K.PRONOUN, K.NAME, K.LPAREN, K.UNKNOWN)
+                or (token.kind is K.KEYWORD and token.text == "空欄")
                 or (token.kind is K.OPERATOR and token.value == "-"))
 
     def _same_line(self, a: Span, b: Span) -> bool:
@@ -545,3 +607,18 @@ class _Parser:
             self._advance()
         if self._current().kind is K.PERIOD:
             self._advance()
+
+
+def _columns_as_subjects(condition: ast.Condition) -> ast.Condition:
+    """「〜のもの」中，主语位置（「が」的前面）的「」表示列名（语法设计 9.4）
+
+        「支払い期日」が空欄のもの   →  列「支払い期日」
+        区分が「大口」のもの         →  「大口」是值，不变
+    """
+    if isinstance(condition, ast.Logical):
+        return ast.Logical(condition.op, tuple(_columns_as_subjects(c) for c in condition.items),
+                           condition.span)
+    left = condition.left
+    if isinstance(left, ast.String):
+        left = ast.Name(normalize(left.value), left.span)
+    return ast.Comparison(condition.op, left, condition.right, condition.span)

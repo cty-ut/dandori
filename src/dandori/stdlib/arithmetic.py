@@ -21,7 +21,7 @@ def tasu(ctx, numbers, base=None):
     """100と200を足す → 300　／　100に5を足す → 105"""
     values.check_no_blanks(_as_list(numbers))
     operands = _as_list(numbers) if base is None else [base, *_as_list(numbers)]
-    return reduce(values.add, operands)
+    return reduce(values.add, operands, 0)          # 空的列（如筛选后没有行）合计为 0
 
 
 def hiku(ctx, minuend, subtrahend):
@@ -33,7 +33,7 @@ def kakeru(ctx, numbers, base=None):
     """2と3を掛ける → 6　／　5に3を掛ける → 15"""
     values.check_no_blanks(_as_list(numbers))
     operands = _as_list(numbers) if base is None else [base, *_as_list(numbers)]
-    return reduce(values.multiply, operands)
+    return reduce(values.multiply, operands, 1)
 
 
 def waru(ctx, dividend, divisor):

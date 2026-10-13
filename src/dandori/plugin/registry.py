@@ -7,11 +7,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable
 
 from dandori.frontend.conjugation import Conjugation
 from dandori.types import Type, ValueType
+
+
+class ParamKind(Enum):
+    """参数槽的种类（语法设计 9.9）：决定写什么、传给实现函数什么"""
+
+    VALUE = "値"            # 100を、明細を                → 值
+    CONDITION = "条件"      # 金額が10000以上のものを       → 对每一行求值的函数 row -> bool
+    COLUMNS = "列名"        # 取引先と金額を、取引先ごとに   → 列名的列表
+    SORT = "並べ方"         # 金額の大きい順に              → (列名, 是否降序)
+    COLUMN = "列"           # 明細の金額を                  → (表, 列名)
+    BLANKS = "空欄指定"     # 明細の金額の空欄を            → (表, 列名)
 
 
 @dataclass(frozen=True)
@@ -20,8 +32,11 @@ class Param:
 
     particle: str                       # 助词，如「を」
     name: str                           # 实现函数的参数名
-    accepts: frozenset[Type] | None     # 接受的类型；None 表示什么都接受（如「表示する」）
+    accepts: frozenset | None           # 接受的类型（可包含 TableType 表示"任何表"）；None 表示什么都接受
     required: bool = True
+    kind: ParamKind = ParamKind.VALUE
+    # 条件、列名、排序的槽：列来自哪个槽的表（如「絞り込む」的条件来自「から」的表）
+    columns_of: str | None = None
 
 
 class VerbError(Exception):
@@ -47,8 +62,9 @@ class VerbSpec:
     params: tuple[Param, ...]        # 参数槽
     returns: ValueType | None        # 结果的类型；None 表示没有结果（如 表示する）
     impl: Callable                   # 实现：impl(ctx, **按参数名传入的值)
-    # 结果的类型取决于参数时（如「読み込む」：取决于文件的列），在编译时调用：
-    # infer(参数名 → 语法树, InferContext) → 类型。出错时抛出 VerbError
+    # 结果的类型取决于参数时（如「読み込む」取决于文件的列，「合計する」取决于有没有「ごとに」），
+    # 在编译时调用：infer(参数名 → 语法树, 参数名 → 类型, InferContext) → 类型。
+    # 返回 None 表示类型未知（参数有错误时），出错时抛出 VerbError
     infer: Callable | None = None
 
     def param_for(self, particle: str) -> Param | None:
@@ -76,9 +92,10 @@ class Registry:
 
 def default_registry() -> Registry:
     """登记了标准库的注册表"""
-    from dandori.stdlib import arithmetic, files
+    from dandori.stdlib import arithmetic, files, table_ops
 
     registry = Registry()
     arithmetic.register(registry)
     files.register(registry)
+    table_ops.register(registry)
     return registry

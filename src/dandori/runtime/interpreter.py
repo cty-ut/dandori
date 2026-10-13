@@ -17,9 +17,9 @@ from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundIf, BoundProgram,
                                       BoundRangeLoop, BoundStatement)
-from dandori.plugin.registry import VerbError
+from dandori.plugin.registry import ParamKind, VerbError
 from dandori.runtime import values
-from dandori.table.interface import Table
+from dandori.table.interface import BLANK, Row, Table
 from dandori.types import TableType
 
 
@@ -88,7 +88,8 @@ class _Executor:
             return None
 
         for step in statement.steps:
-            args = {name: self.evaluate(expr, last) for name, expr in step.args.items()}
+            params = {p.name: p for p in step.spec.params}
+            args = {name: self.argument(params[name].kind, expr, last) for name, expr in step.args.items()}
             try:
                 last = step.spec.impl(self.ctx, **args)
             except VerbError as e:
@@ -107,34 +108,64 @@ class _Executor:
     def _fail(code: str, span, **params):
         raise ExecutionError(Diagnostic.make(code, span, **params))
 
+    # ---------- 参数：按种类准备好传给动词的东西（语法设计 9.9） ----------
+
+    def argument(self, kind: ParamKind, expr: ast.Expr, last):
+        match kind:
+            case ParamKind.VALUE:
+                return self.evaluate(expr, last)
+            case ParamKind.CONDITION:
+                return lambda row: self.test(expr.condition, last, row)
+            case ParamKind.COLUMNS:
+                items = expr.items if isinstance(expr, ast.ListExpr) else (expr,)
+                return [ast.column_name(item) for item in items]
+            case ParamKind.SORT:
+                return ast.column_name(expr.target), expr.descending
+            case ParamKind.COLUMN:
+                return self.evaluate(expr.table, last), expr.column
+            case ParamKind.BLANKS:
+                return self.evaluate(expr.target.table, last), expr.target.column
+        raise TypeError(kind)
+
     # ---------- 条件 ----------
 
-    def test(self, condition: ast.Condition, last) -> bool:
+    def test(self, condition: ast.Condition, last, row: Row | None = None) -> bool:
+        """row 不为 None 时，条件中的列名取这一行的值（「〜のもの」）"""
         if isinstance(condition, ast.Logical):
-            results = (self.test(item, last) for item in condition.items)
+            # 生成器 + all/any：从左往右检查，结果确定了就停止。
+            # 所以「金額が空欄でないかつ金額が10000以上」不会对空欄做大小比较
+            results = (self.test(item, last, row) for item in condition.items)
             return all(results) if condition.op == "かつ" else any(results)
-        a = self.evaluate(condition.left, last)
-        b = self.evaluate(condition.right, last)
+        a = self.evaluate(condition.left, last, row)
+        b = self.evaluate(condition.right, last, row)
+        if (a is BLANK or b is BLANK) and condition.op not in ("=", "<>"):
+            side = condition.left if a is BLANK else condition.right
+            column = side.name if isinstance(side, ast.Name) else "値"
+            raise VerbError("E5006", column=column, where=row.origin if row else "")
         return _COMPARISONS[condition.op](a, b)
 
     # ---------- 值 ----------
 
-    def evaluate(self, expr: ast.Expr, last):
+    def evaluate(self, expr: ast.Expr, last, row: Row | None = None):
         match expr:
             case ast.Number(value=value) | ast.String(value=value):
                 return value
+            case ast.Blank():
+                return BLANK
             case ast.Sore() | ast.PreviousResult():
                 return last
             case ast.Name(name=name):
+                if row is not None and name in row.values:
+                    return row.values[name]        # 条件中的列名：这一行的值
                 return self.env[name]
             case ast.ColumnRef(table=table, column=column):
-                return self.evaluate(table, last).column(column)
+                return self.evaluate(table, last, row).column(column)
             case ast.ListExpr(items=items):
-                return [self.evaluate(item, last) for item in items]
+                return [self.evaluate(item, last, row) for item in items]
             case ast.Negate(operand=operand):
-                return values.subtract(0, self.evaluate(operand, last))
+                return values.subtract(0, self.evaluate(operand, last, row))
             case ast.BinaryOp(op=op, left=left, right=right):
-                a, b = self.evaluate(left, last), self.evaluate(right, last)
+                a, b = self.evaluate(left, last, row), self.evaluate(right, last, row)
                 try:
                     return _OPERATORS[op](a, b)
                 except VerbError as e:

@@ -39,6 +39,14 @@ class Column(list):
         return self.origins[index]
 
 
+class Row:
+    """表的一行：列名 → 值，以及来源（「明細.csv の 4行目」）。条件对每一行求值时使用"""
+
+    def __init__(self, values: dict, origin: str):
+        self.values = values
+        self.origin = origin
+
+
 class Table:
     def __init__(self, table_type: TableType, rows: list[tuple], origins: list[str],
                  display_names: list[str]):
@@ -53,3 +61,51 @@ class Table:
 
     def __len__(self) -> int:
         return len(self.rows)
+
+    # ---------- 表格操作的基本部件（语法设计 9.2）。全部返回新表，原表不变 ----------
+
+    def records(self):
+        names = self.type.names
+        for row, origin in zip(self.rows, self.origins):
+            yield Row(dict(zip(names, row)), origin)
+
+    def _derive(self, rows, origins, table_type=None, display_names=None) -> Table:
+        return Table(table_type or self.type, rows, origins, display_names or self.display_names)
+
+    def filter(self, predicate) -> Table:
+        kept = [(row, origin) for row, origin, record in zip(self.rows, self.origins, self.records())
+                if predicate(record)]
+        return self._derive([r for r, _ in kept], [o for _, o in kept])
+
+    def select(self, names: list[str]) -> Table:
+        indexes = [self.type.names.index(n) for n in names]
+        table_type = TableType(tuple(self.type.columns[i] for i in indexes))
+        rows = [tuple(row[i] for i in indexes) for row in self.rows]
+        return self._derive(rows, self.origins, table_type, [self.display_names[i] for i in indexes])
+
+    def sort(self, name: str, descending: bool) -> Table:
+        """排序。空欄总是排在最后；相等的行保持原来的顺序（Python 的排序是稳定的）"""
+        index = self.type.names.index(name)
+        pairs = list(zip(self.rows, self.origins))
+        filled = [p for p in pairs if p[0][index] is not BLANK]
+        blanks = [p for p in pairs if p[0][index] is BLANK]
+        filled.sort(key=lambda p: p[0][index], reverse=descending)
+        ordered = filled + blanks
+        return self._derive([r for r, _ in ordered], [o for _, o in ordered])
+
+    def fill_blanks(self, name: str, value) -> Table:
+        index = self.type.names.index(name)
+        rows = [row[:index] + (value,) + row[index + 1:] if row[index] is BLANK else row
+                for row in self.rows]
+        return self._derive(rows, self.origins)
+
+    def groups(self, keys: list[str]) -> list[tuple[tuple, list[int]]]:
+        """按 keys 分组：[(键的值, [行号…])]，按各组第一次出现的顺序"""
+        indexes = [self.type.names.index(k) for k in keys]
+        groups: dict[tuple, list[int]] = {}
+        for i, row in enumerate(self.rows):
+            groups.setdefault(tuple(row[j] for j in indexes), []).append(i)
+        return list(groups.items())
+
+    def display_name(self, name: str) -> str:
+        return self.display_names[self.type.names.index(name)]

@@ -3,6 +3,7 @@
 日本的 CSV 有几个特有的问题，都在这里处理：
 - 文字编码：Excel 日文环境默认存为 Shift_JIS，银行 CSV 也大多如此 → 自动识别
 - 数字：千位分隔符「1,000」、全角数字「１００」 → 都识别为数
+- 编码：以 0 开头的「00123」「0600001」（取引先コード、郵便番号、電話番号） → 文字列，保留开头的 0
 - 空格子 → 空欄（不是 0）
 """
 
@@ -20,6 +21,8 @@ from dandori.table.interface import BLANK, Table
 from dandori.types import TableType, Type
 
 _NUMBER = re.compile(r"-?(\d+|\d{1,3}(,\d{3})+)(\.\d+)?")
+# 以 0 开头、后面还跟着数字的：编码，不是数（「0」本身和「0.5」除外）
+_CODE = re.compile(r"-?0[\d,]")
 
 
 def read_csv(path: Path, display_name: str) -> Table:
@@ -44,12 +47,15 @@ def read_csv(path: Path, display_name: str) -> Table:
         raw_rows.append([cell.strip() for cell in record])
         origins.append(f"{display_name} の {line_no}行目")
 
-    # 类型推断：一列中所有非空的值都是数 → 数；否则 → 文字列
+    # 类型推断：一列中所有非空的值都是数 → 数；否则 → 文字列。
+    # 只要有一个值像编码（以 0 开头，如「00123」），整列就是文字列：
+    # 真正的金额、数量不会写成「0123」，而编码的开头 0 一旦丢失就无法恢复
     types = []
     for i in range(len(header)):
         cells = [row[i] for row in raw_rows if row[i] != ""]
-        types.append(Type.NUMBER if cells and all(_parse_number(c) is not None for c in cells)
-                     else Type.STRING)
+        is_number = (cells and all(_parse_number(c) is not None for c in cells)
+                     and not any(_CODE.match(normalize(c)) for c in cells))
+        types.append(Type.NUMBER if is_number else Type.STRING)
 
     rows = [tuple(_convert(cell, t) for cell, t in zip(row, types)) for row in raw_rows]
     table_type = TableType(tuple(zip(names, types)))

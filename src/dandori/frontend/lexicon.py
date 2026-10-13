@@ -15,8 +15,8 @@ from dandori.frontend.conjugation import Form, conjugate
 from dandori.frontend.tokens import TokenKind
 from dandori.plugin.registry import Registry
 
-PARTICLES = ("と", "を", "から", "で", "に", "は", "が", "まで", "の")
-PRONOUNS = ("それ",)
+PARTICLES = ("と", "を", "から", "で", "に", "は", "が", "まで", "の", "ごとに")
+PRONOUNS = ("それ", "その")   # その ＝ それの
 # 最长匹配保证「合計とする」切成 合計 / とする，而不是 合計 / と / する；
 # 「でない」「を超える」同理，不会被切成助词「で」「を」
 KEYWORDS = (
@@ -26,6 +26,8 @@ KEYWORDS = (
     "かつ", "または",
     # 「回」不单独作为关键字，否则词典优先规则会把「回数」「回収」切坏
     "回繰り返して", "繰り返して",
+    # 表格操作（语法设计第 9 节）。「のもの」「もの」都认：名词后接「の」，动词、形容词后直接接
+    "のもの", "もの", "空欄", "大きい順", "小さい順",
 )
 
 
