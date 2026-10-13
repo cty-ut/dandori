@@ -79,9 +79,17 @@ def test_check_program(folder):
 
 def test_inspect_csv_sends_no_data_by_default(folder):
     info = json.loads(Toolbox(folder).execute("inspect_csv", {"file": "明細.csv"}).content)
-    assert info["columns"] == [{"name": "取引先", "type": "文字列"}, {"name": "金額", "type": "数"}]
+    assert info["columns"] == [{"name": "取引先", "type": "文字列", "blanks": 0},
+                               {"name": "金額", "type": "数", "blanks": 0}]
     assert info["rows"] == 2
     assert "sample" not in info and "山田商事" not in json.dumps(info, ensure_ascii=False)
+
+
+def test_inspect_csv_counts_blanks(folder):
+    # 空欄数是统计信息：AI 要知道有空欄，才会想到问"空欄怎么处理"
+    (folder / "空欄.csv").write_text("取引先,金額\nA,100\nB,\n,300\n", encoding="utf-8")
+    info = json.loads(Toolbox(folder).execute("inspect_csv", {"file": "空欄.csv"}).content)
+    assert [c["blanks"] for c in info["columns"]] == [1, 1]
 
 
 def test_inspect_csv_with_samples(folder):
@@ -359,6 +367,21 @@ def test_must_ask_and_forbid(tmp_path):
     invented = case["reference_program"].replace("入金を請求に", "消込の手数料は、880円までとする。\n入金を請求に")
     guessed = evals.run_case(case, FakeProvider([submit(invented, questions=["?"])]))
     assert not guessed.correct and "消込の手数料" in guessed.note      # 自己编了手续费
+
+
+def test_must_ask_program_must_also_run():
+    # 提了问题，但程序在数据上一运行就报错（空欄）：也算错
+    case = by_name("空欄のある平均")
+    crashes = "この処理が使うもの：\n  読み込み：「明細.csv」\nここまで。\n「明細.csv」を読み込んで、明細とする。\n明細の金額を平均して表示する。\n"
+    result = evals.run_case(case, FakeProvider([submit(crashes, questions=["空欄は？"])]))
+    assert not result.correct and "実行エラー" in result.note
+    assert evals.run_case(case, FakeProvider([submit(case["reference_program"], questions=["空欄は？"])])).correct
+
+
+def test_reference_has_no_default_fee():
+    # 说明书的语法摘要不能把某个公司的手续费当作"标准写法"展示
+    prompt = system_prompt()
+    assert "標準値ではない" in prompt and "銀行の営業日" in prompt and "実行するとエラーになるプログラムは提出しない" in prompt
 
 
 def test_read_only_and_minimal_permissions():

@@ -170,11 +170,15 @@ def _accepts(accepts) -> list[str] | None:
 
 
 def describe_csv(file_name: str, base_dir: Path, sample_rows: int = 0) -> dict:
-    """CSV 的结构：列名、类型、行数。sample_rows > 0 时附上前几行（默认不附：不发送客户数据）"""
+    """CSV 的结构：列名、类型、行数、各列的空欄数。sample_rows > 0 时附上前几行（默认不附：不发送客户数据）
+
+    空欄数是统计信息，不是数据本身；AI 要知道有空欄，才会想到问"空欄怎么处理"。
+    """
     from dandori.connectors import ConnectorError
     from dandori.connectors.csv import read_csv
     from dandori.runtime.values import format_value
     from dandori.stdlib.files import resolve
+    from dandori.table.interface import BLANK
     try:
         table = read_csv(resolve(file_name, base_dir), file_name)
     except (ConnectorError, VerbError) as e:
@@ -182,8 +186,8 @@ def describe_csv(file_name: str, base_dir: Path, sample_rows: int = 0) -> dict:
         return {"error": MESSAGES[e.code].format(**e.params)}
     info = {
         "file": file_name,
-        "columns": [{"name": shown, "type": t.value}
-                    for shown, (_, t) in zip(table.display_names, table.type.columns)],
+        "columns": [{"name": shown, "type": t.value, "blanks": sum(row[i] is BLANK for row in table.rows)}
+                    for i, (shown, (_, t)) in enumerate(zip(table.display_names, table.type.columns))],
         "rows": len(table),
     }
     if sample_rows > 0:

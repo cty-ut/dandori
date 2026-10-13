@@ -7,7 +7,8 @@
   },
   "today": "2026-11-02",
   "expect": {
-    "must_ask": true
+    "must_ask": true,
+    "runs": true
   },
   "reference_program": "この処理が使うもの：\n  読み込み：「明細.csv」\nここまで。\n「明細.csv」を読み込んで、明細とする。\n明細から金額が空欄でないものを絞り込んで、その金額を平均して表示する。\n",
   "reference_questions": [

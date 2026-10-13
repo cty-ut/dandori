@@ -3,7 +3,7 @@
 工具名只能用英文字母（三家的 API 都这样规定），说明用日文。
 所有工具都只通过公开 API（dandori.api）使用语言。
 
-默认不发送客户数据：inspect_csv 只返回列名、类型、行数；允许时（--サンプル）才附最多 3 行。
+默认不发送客户数据：inspect_csv 只返回列名、类型、行数、各列的空欄数（统计，不是数据）；允许时（--サンプル）才附最多 3 行。
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ TOOLS = [
     ToolSpec("check_program", "段取りのプログラムを検査する。エラー（エラーコード・行・列・メッセージ）か、"
              "問題がなければプログラムが読み書きするファイルを返す。",
              _schema({"program": {"type": "string", "description": "段取りのプログラム全体"}})),
-    ToolSpec("inspect_csv", "フォルダにある CSV ファイルの列名・型・行数を調べる。",
+    ToolSpec("inspect_csv", "フォルダにある CSV ファイルの列名・型・行数と、列ごとの空欄の数（blanks）を調べる。",
              _schema({"file": {"type": "string", "description": "ファイル名（例：明細.csv）"}})),
     ToolSpec("ask_user", "要望から決まらない業務のルールを、利用者に質問する。",
              _schema({"question": {"type": "string", "description": "利用者への質問（日本語、一つずつ）"}})),

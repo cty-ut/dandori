@@ -4,6 +4,7 @@
 
     file / header / rows / ordered   输出文件的列和内容
     output / numeric                 显示的内容（numeric：去掉「円」和千位分隔符后比较）
+    runs                             在用例的数据上能运行（不报错）：不检查结果，用于答案不唯一的用例
     must_ask                         需求模糊：必须提出確認事項，不能自己决定
     forbid                           程序中不能出现的写法（例：自己编出来的「消込の手数料」）
     read_only                        只能声明「読み込み」
@@ -73,13 +74,15 @@ def evaluate_program(case: dict, program: str, directory: Path) -> tuple[list, b
         kinds = {kind for kind, _, _ in compiled.permissions or ()}
         checks.append(("読むだけ", kinds <= {"読み込み"}, "" if kinds <= {"読み込み"} else f"宣言：{sorted(kinds)}"))
 
-    if "output" in expect or "file" in expect:
+    if "output" in expect or "file" in expect or expect.get("runs"):
         output = []
         ctx = Context(output=output.append, base_dir=directory, today=date.fromisoformat(case["today"]))
         errors = api.run(Source(program, "評価.dandori"), ctx)
         if errors:
             checks.append(("実行", False, f"実行エラー：{errors[0].message}"))
             return checks, minimal
+        if expect.get("runs"):
+            checks.append(("実行", True, ""))
         if "output" in expect:
             lines = [line for text in output for line in text.split("\n")]
             want = expect["output"]
