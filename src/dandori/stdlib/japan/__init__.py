@@ -13,6 +13,7 @@ from dandori.stdlib.japan import names, reconcile, tax
 from dandori.table.interface import BLANK
 from dandori.stdlib.japan.calendar import load_bank_calendar
 from dandori.stdlib.japan.payment import parse_terms
+from dandori.stdlib.japan.schedule import parse_schedule
 from dandori.types import Type
 
 _DATE = frozenset({Type.DATE})
@@ -36,6 +37,14 @@ def _company_days(path: str, base_dir):
     if table.type.columns[0][1] is not Type.DATE:
         raise VerbError("E3061", file=path)
     return table, {row[0] for row in table.rows if row[0] is not BLANK}
+
+
+def check_schedule(text: str, ctx):
+    """「実行の予定」：编译时检查写法（平台设计 3）。用到营业日时，「説明」中显示祝日表"""
+    schedule = parse_schedule(text)
+    if schedule.uses_company and ("暦", "会社休日") not in ctx.settings:
+        raise VerbError("E3060", word="会社営業日")
+    return "祝日" if schedule.uses_calendar else None
 
 
 def check_payment(args, types, ctx):
@@ -77,6 +86,9 @@ def register(registry: Registry) -> None:
         return calendar.with_company_holidays(days)
 
     registry.calendar_factories["会社"] = company_calendar
+
+    # 定时执行（平台设计 3）：语言只检查和说明，按时运行的是平台
+    registry.add_setting(SettingSpec("実行", "予定", SettingKind.TEXT, check_schedule, example="「毎月25日 9時」"))
 
     registry.add_date_property(DateProperty("翌営業日", calendar.next, Type.DATE, uses="祝日"))
     registry.add_date_property(DateProperty("前営業日", calendar.previous, Type.DATE, uses="祝日"))

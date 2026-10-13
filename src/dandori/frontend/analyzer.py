@@ -309,7 +309,7 @@ class _Analyzer:
                         example=spec.kind.value)
         elif value is not None and spec.check is not None:
             try:
-                spec.check(value, self.infer_context)
+                self._use(spec.check(value, self.infer_context))
             except VerbError as e:
                 self._error(e.code, node.value.span, **e.params)
         if value is not None and spec.kind is SettingKind.FILE:
@@ -337,7 +337,7 @@ class _Analyzer:
             if not node.up_to or not isinstance(value, ast.Number):
                 return None
             return value.value
-        if kind is SettingKind.FILE:
+        if kind in (SettingKind.FILE, SettingKind.TEXT):
             if node.up_to or not isinstance(value, ast.String):
                 return None
             return value.value

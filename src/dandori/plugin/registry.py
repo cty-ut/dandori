@@ -72,6 +72,7 @@ class SettingKind(Enum):
     COLUMN = "「請求の支払期日」"                           # 一个列 → (列名, 类型)
     LIMIT = "「880円まで」"                                 # 上限 → 数或金額
     FILE = "「「〜.csv」」"                                 # 文件名 → 文字列
+    TEXT = "「「〜」」"                                     # 文字列（文件以外，如予定）→ 文字列
 
 
 @dataclass(frozen=True)
@@ -80,8 +81,10 @@ class SettingSpec:
     namespace: str                   # 「消込」
     key: str                         # 「手数料」
     kind: SettingKind
-    # FILE 类的设定：编译时检查文件（读取、格式），出错时抛出 VerbError
+    # 编译时检查值（FILE：读取文件、检查格式；TEXT：检查写法），出错时抛出 VerbError。
+    # 可以返回用到的规则数据的名字（如「祝日」），显示在「説明」中
     check: Callable | None = None
+    example: str | None = None       # 目录中显示的例子；None 时用 kind 的例子
 
 
 @dataclass(frozen=True)

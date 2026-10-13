@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from dandori import api, dates
@@ -68,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         result = api.compile_source(source, base_dir=base_dir)
         errors = result.errors
         if not errors:
-            _explain(result)
+            _explain(result, base_dir)
     elif args.command == "字句":
         tokens, errors = tokenize(source, Lexicon.from_registry(default_registry()))
         for token in tokens:
@@ -83,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if errors else 0
 
 
-def _explain(result: api.CompileResult) -> None:
+def _explain(result: api.CompileResult, base_dir: Path) -> None:
     if not result.resources:
         print("このプログラムはファイルを読み込んだり書き出したりしません")
     else:
@@ -99,6 +100,14 @@ def _explain(result: api.CompileResult) -> None:
             print(f"  ※ {kind}：「{path}」{'フォルダ' if folder else ''} は宣言されていますが、使われていません")
     else:
         print("※「この処理が使うもの」が書かれていません（正式に運用するときは必要です）")
+    if result.schedule is not None:
+        print(f"実行の予定：{result.schedule.describe()}")
+        try:
+            following = api.next_run(result, datetime.now(dates.JST), base_dir)
+            print(f"  次の実行：{dates.format_western(following.date())} {following:%H:%M}")
+        except api.ScheduleError as e:
+            print(f"  次の実行：計算できません（{e}）")
+        print("  ※ 予定どおりに実行するのは段取りの基盤（dandori-platform）です。手で実行するときは関係ありません")
     if result.rule_data:
         print("使うルールデータ：")
         for line in result.rule_data:

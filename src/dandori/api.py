@@ -49,6 +49,47 @@ class CompileResult:
         """程序使用的规则数据（祝日表等）及其来源和范围（「説明」）"""
         return self.program.rule_data
 
+    @property
+    def settings(self) -> dict[tuple[str, str], object]:
+        """设定文：(名前空間, 設定) → 值。设定只能写在最外层"""
+        from dandori.frontend.analyzer import BoundSetting
+        return {(s.namespace, s.key): s.value for s in self.program.sentences
+                if isinstance(s, BoundSetting) and s.value is not None}
+
+    @property
+    def schedule(self):
+        """「実行の予定」（平台设计 3）；没有写、或有编译错误时为 None"""
+        from dandori.stdlib.japan.schedule import parse_schedule
+        text = self.settings.get(("実行", "予定"))
+        if text is None or self.errors:
+            return None
+        return parse_schedule(text)
+
+
+class ScheduleError(Exception):
+    """无法计算下次运行时间（如祝日表的范围不够）。信息是日文"""
+
+
+def next_run(result: CompileResult, after, base_dir: Path | None = None, registry: Registry | None = None):
+    """after（datetime）之后的下一次运行时间（JST）。没有予定时为 None
+
+    用到公司营业日时，读取「暦の会社休日」的文件（以 base_dir 为准）。
+    """
+    from dandori.errors import MESSAGES
+    from dandori.stdlib.japan import _company_days
+    schedule = result.schedule
+    if schedule is None:
+        return None
+    registry = registry or default_registry()
+    try:
+        company = None
+        if schedule.uses_company:
+            _, days = _company_days(result.settings[("暦", "会社休日")], base_dir or Path.cwd())
+            company = registry.calendar.with_company_holidays(days)
+        return schedule.next_after(after, registry.calendar, company)
+    except VerbError as e:
+        raise ScheduleError(MESSAGES[e.code].format(**e.params)) from None
+
 
 def compile_source(source: Source, registry: Registry | None = None,
                    base_dir: Path | None = None) -> CompileResult:
@@ -145,7 +186,7 @@ def catalog(registry: Registry | None = None) -> dict:
             "permission": spec.permission,
             "doc": _example(spec.impl.__doc__),
         })
-    settings = [{"namespace": ns, "key": key, "kind": s.kind.name, "example": s.kind.value}
+    settings = [{"namespace": ns, "key": key, "kind": s.kind.name, "example": s.example or s.kind.value}
                 for (ns, key), s in registry._settings.items()]
     properties = [{"name": name, "result": registry.date_property(name).result.value}
                   for name in registry.date_property_names]

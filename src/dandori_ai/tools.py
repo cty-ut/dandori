@@ -118,4 +118,5 @@ def explain(result: api.CompileResult) -> dict:
         "files": [r.explain + ("（条件によって）" if r.conditional else "") for r in result.resources],
         "permissions": [f"{k}：「{p}」{'フォルダ' if folder else ''}" for k, p, folder in result.permissions or []],
         "rule_data": list(result.rule_data),
+        "schedule": result.schedule.describe() if result.schedule is not None else None,
     }
