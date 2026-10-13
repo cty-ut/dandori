@@ -1,6 +1,8 @@
 """命令行
 
     dandori 実行 ファイル.dandori        执行程序
+    dandori 試し ファイル.dandori        执行程序，但不写出文件，报告"将要做什么"
+    dandori 説明 ファイル.dandori        不执行，列出程序会读取、写出哪些文件
     dandori 字句 ファイル.dandori        断词结果（调试用）
     dandori 構文 ファイル.dandori        语法树（调试用）
     dandori 実行 -c "100と200を足して表示する。"   也可以直接传程序
@@ -21,24 +23,38 @@ from dandori.frontend.source import Source
 from dandori.plugin.registry import default_registry
 from dandori.runtime.interpreter import Context
 
+COMMANDS = [
+    ("実行", "プログラムを実行する"),
+    ("試し", "試しに実行する（ファイルは書き出さない）"),
+    ("説明", "プログラムが読み込む・書き出すファイルを表示する（実行しない）"),
+    ("字句", "断詞の結果を表示する（デバッグ用）"),
+    ("構文", "構文木を表示する（デバッグ用）"),
+]
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dandori", description="段取り")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name, help_text in [("実行", "プログラムを実行する"),
-                            ("字句", "断詞の結果を表示する（デバッグ用）"),
-                            ("構文", "構文木を表示する（デバッグ用）")]:
+    for name, help_text in COMMANDS:
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("file", nargs="?", help=".dandori ファイル")
         sub.add_argument("-c", dest="code", help="プログラムを直接渡す")
 
     args = parser.parse_args(argv)
     source = _load_source(args, parser)
-    # 「読み込む」的相对路径以程序文件所在的目录为准；-c 时为当前目录
+    # 文件的相对路径以程序文件所在的目录为准；-c 时为当前目录
     base_dir = Path(args.file).resolve().parent if args.code is None else Path.cwd()
 
-    if args.command == "実行":
-        errors = api.run(source, Context(base_dir=base_dir))
+    if args.command in ("実行", "試し"):
+        ctx = Context(base_dir=base_dir, dry_run=args.command == "試し")
+        errors = api.run(source, ctx)
+        if not errors:
+            _report_files(ctx)
+    elif args.command == "説明":
+        result = api.compile_source(source, base_dir=base_dir)
+        errors = result.errors
+        if not errors:
+            _explain(result)
     elif args.command == "字句":
         tokens, errors = tokenize(source, Lexicon.from_registry(default_registry()))
         for token in tokens:
@@ -51,6 +67,25 @@ def main(argv: list[str] | None = None) -> int:
 
     _report(errors, source)
     return 1 if errors else 0
+
+
+def _explain(result: api.CompileResult) -> None:
+    if not result.resources:
+        print("このプログラムはファイルを読み込んだり書き出したりしません")
+        return
+    print("このプログラムは次のことをします：")
+    for resource in result.resources:
+        note = "（条件によって）" if resource.conditional else ""
+        print(f"  {resource.explain}{note}")
+
+
+def _report_files(ctx: Context) -> None:
+    sys.stdout.flush()          # 先输出程序的「表示する」，再输出文件的报告
+    lines = ctx.transaction.report(done=not ctx.dry_run)
+    if ctx.dry_run:
+        print("（試し実行：ファイルは書き出していません）", file=sys.stderr)
+    for line in lines:
+        print(f"  {line}", file=sys.stderr)
 
 
 def _report(errors: list[Diagnostic], source: Source) -> None:

@@ -10,6 +10,7 @@
     7. 循环变量有没有被改动、被用到循环外？（语法设计 7.4）
     8. 表有没有这一列？（语法设计 8.4）——「読み込む」在这里就读取文件，确定列定义
     9. 逐行处理中的列名指哪张表？有歧义吗？（语法设计 10.3、10.4）
+   10. 程序会读取、写出哪些文件？（语法设计 11.6、11.8）——「説明」命令据此回答
 
 能在运行前发现的错误，都在这里发现。通过检查的程序，执行时只可能遇到
 "运行时才知道"的问题（比如除以 0）。
@@ -24,7 +25,7 @@ from pathlib import Path
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.source import Source, Span
-from dandori.plugin.registry import InferContext, Param, ParamKind, Registry, VerbError, VerbSpec
+from dandori.plugin.registry import Effect, InferContext, Param, ParamKind, Registry, VerbError, VerbSpec
 from dandori.types import LIST_OF, TableType, Type, ValueType
 
 # "有结果，但类型未知"（如文件读取失败）。与 None（没有结果）区分开，避免后续连锁报错
@@ -100,8 +101,19 @@ BoundStatement = (BoundSentence | BoundAssignment | BoundIf | BoundCountLoop | B
 
 
 @dataclass(frozen=True)
+class Resource:
+    """程序会碰的一个文件（语法设计 11.6）"""
+    effect: Effect
+    path: str
+    explain: str           # 如「「集計.csv」を新規作成します」
+    conditional: bool      # 写在もし里：不一定执行
+    span: Span
+
+
+@dataclass(frozen=True)
 class BoundProgram:
     sentences: tuple[BoundStatement, ...]
+    resources: tuple[Resource, ...] = ()
 
 
 def analyze(program: ast.Program, registry: Registry, source: Source, base_dir: Path | None = None
@@ -131,9 +143,22 @@ class _Analyzer:
         # 在这些地方，名字被理解为表的列（语法设计 9.4、10.3）。元素是 (表的类型, 给人看的表名)
         self.scopes: list[tuple[TableType, str]] = []
         self.loop_depth = 0                      # 「繰り返しをやめる」「次に進む」只能在循环中使用
+        self.if_depth = 0                        # もし文中的写出：「説明」中标注"条件によって"
+        self.resources: list[Resource] = []
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
-        return BoundProgram(self._statements(program.sentences)), self.errors
+        statements = self._statements(program.sentences)
+        self._check_resources()
+        return BoundProgram(statements, tuple(self.resources)), self.errors
+
+    def _check_resources(self) -> None:
+        """同一个文件写两次（E3040）。写出后再读取（E3041）在 _step 中、尝试读取之前检查"""
+        written: set[str] = set()
+        for resource in self.resources:
+            if resource.effect is Effect.WRITE:
+                if resource.path in written:
+                    self._error("E3040", resource.span, file=resource.path)
+                written.add(resource.path)
 
     def _statements(self, statements) -> tuple[BoundStatement, ...]:
         bound = []
@@ -181,7 +206,9 @@ class _Analyzer:
                 self.last_type = outer_last          # 条件属于外层，「それ」指向もし之前的结果
                 self._check_condition(branch.condition)
             self.last_type = None                    # 「それ」不跨越块的边界
+            self.if_depth += 1
             body = self._statements(branch.body)
+            self.if_depth -= 1
             outcomes.append(self.defined)
             branches.append(BoundBranch(branch.condition, body))
 
@@ -374,6 +401,13 @@ class _Analyzer:
                 scope = (_table_or_none(types.get(param.columns_of)), self._table_label(source))
                 self._check_column_arg(spec, param, bound[param.name], scope)
 
+        # 写出后再读取同一个文件：编译时读到的是写出前的旧内容（或者文件还不存在），
+        # 在尝试读取之前就报错，给出真正的原因（E3041），而不是"找不到文件"
+        path = bound.get(spec.resource_param) if spec.resource_param else None
+        if (spec.effect is Effect.READ and isinstance(path, ast.String)
+                and any(r.effect is Effect.WRITE and r.path == path.value for r in self.resources)):
+            self._error("E3041", path.span, file=path.value)
+
         # 5. 结果的类型。取决于参数的（「読み込む」「合計する」等），由动词定义的 infer 在编译时决定
         result = spec.returns
         if spec.infer is not None:
@@ -385,6 +419,21 @@ class _Analyzer:
                 except VerbError as e:
                     span = next(iter(bound.values())).span if bound else step.span
                     self._error(e.code, span, **e.params)
+
+        # 6. 编译时的额外检查（「書き出す」：文件是否已存在等）
+        if spec.check is not None and not missing and not fill_failed and len(self.errors) == errors_before:
+            try:
+                spec.check(bound, types, self.infer_context)
+            except VerbError as e:
+                span = bound[spec.resource_param].span if spec.resource_param in bound else step.span
+                self._error(e.code, span, **e.params)
+
+        # 7. 记录程序会碰的文件
+        if spec.effect is Effect.WRITE and self.loop_depth > 0:
+            self._error("E3042", step.span)
+        if isinstance(path, ast.String) and len(self.errors) == errors_before:
+            self.resources.append(Resource(spec.effect, path.value, spec.explain.format(path=path.value),
+                                           self.if_depth > 0, path.span))
 
         self.last_type = result
         return BoundStep(spec, bound, step.span, result)

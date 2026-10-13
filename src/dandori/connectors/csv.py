@@ -101,3 +101,27 @@ def _convert(cell: str, column_type: Type):
     if column_type is Type.NUMBER:
         return _parse_number(cell)
     return cell
+
+
+# ---------- 写出（语法设计 11.3） ----------
+
+def write_csv(table: Table) -> bytes:
+    """表 → CSV 的字节
+
+    UTF-8 带 BOM：不带 BOM 时用 Excel 双击打开会乱码。换行用 CRLF（Windows / Excel 的标准）。
+    数不加千位分隔符，Excel 打开后仍然是数；空欄写成空格子。
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(table.display_names)
+    for row in table.rows:
+        writer.writerow([_format_cell(v) for v in row])
+    return buffer.getvalue().encode("utf-8-sig")
+
+
+def _format_cell(value) -> str:
+    if value is BLANK:
+        return ""
+    if isinstance(value, Decimal):
+        return format(value.normalize(), "f")
+    return str(value)

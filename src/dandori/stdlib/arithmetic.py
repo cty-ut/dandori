@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import reduce
 
 from dandori.frontend.conjugation import Conjugation
-from dandori.plugin.registry import Param, Registry, VerbSpec
+from dandori.plugin.registry import Effect, Param, Registry, VerbSpec
 from dandori.runtime import values
 from dandori.types import Type
 
@@ -74,5 +74,5 @@ def register(registry: Registry) -> None:
     registry.add_verb(VerbSpec(
         "std.表示する", "表示する", Conjugation.SURU,
         params=(Param("を", "value", None),),
-        returns=None, impl=hyouji,
+        returns=None, impl=hyouji, effect=Effect.OUTPUT,
     ))

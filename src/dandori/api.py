@@ -10,12 +10,12 @@ from pathlib import Path
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
-from dandori.frontend.analyzer import BoundProgram, analyze
+from dandori.frontend.analyzer import BoundProgram, Resource, analyze
 from dandori.frontend.lexer import tokenize
 from dandori.frontend.lexicon import Lexicon
 from dandori.frontend.parser import parse
-from dandori.frontend.source import Source
-from dandori.plugin.registry import Registry, default_registry
+from dandori.frontend.source import Source, Span
+from dandori.plugin.registry import Registry, VerbError, default_registry
 from dandori.runtime.interpreter import Context, ExecutionError, execute
 
 
@@ -24,6 +24,11 @@ class CompileResult:
     tree: ast.Program
     program: BoundProgram
     errors: list[Diagnostic]   # 按出现位置排序
+
+    @property
+    def resources(self) -> tuple[Resource, ...]:
+        """程序会读取、写出哪些文件（「説明」）"""
+        return self.program.resources
 
 
 def compile_source(source: Source, registry: Registry | None = None,
@@ -42,13 +47,20 @@ def compile_source(source: Source, registry: Registry | None = None,
 
 def run(source: Source, ctx: Context | None = None, registry: Registry | None = None
         ) -> list[Diagnostic]:
-    """编译并执行。有编译错误时一行也不执行，返回所有错误"""
+    """编译并执行。有编译错误时一行也不执行，返回所有错误
+
+    写出的内容在程序全部成功后才写入（ctx.transaction.commit）；中途出错或试运行时什么都不写。
+    """
     ctx = ctx or Context()
     result = compile_source(source, registry, ctx.base_dir)
     if result.errors:
         return result.errors
     try:
         execute(result.program, ctx)
+        if not ctx.dry_run:
+            ctx.transaction.commit()
     except ExecutionError as e:
         return [e.diagnostic]
+    except VerbError as e:      # 写入文件时失败
+        return [Diagnostic.make(e.code, Span(0, 0), **e.params)]
     return []

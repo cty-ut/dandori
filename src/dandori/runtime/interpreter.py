@@ -20,6 +20,7 @@ from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundEac
                                       BoundProgram, BoundRangeLoop, BoundStatement)
 from dandori.plugin.registry import ParamKind, VerbError
 from dandori.runtime import values
+from dandori.runtime.transaction import Transaction
 from dandori.table.interface import BLANK, Row, Table
 from dandori.types import TableType
 
@@ -33,6 +34,9 @@ class Context:
     """
     output: Callable[[str], None] = field(default=print)
     base_dir: Path = field(default_factory=Path.cwd)   # 程序文件所在的目录：相对路径以它为准
+    # 写出的内容先暂存在这里，程序全部成功后才写入（语法设计 11.4）
+    transaction: Transaction = field(default_factory=Transaction)
+    dry_run: bool = False                              # 「試し」：执行全部，但不写入
 
 
 class ExecutionError(Exception):

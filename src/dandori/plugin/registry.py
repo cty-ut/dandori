@@ -15,6 +15,15 @@ from dandori.frontend.conjugation import Conjugation
 from dandori.types import Type, ValueType
 
 
+class Effect(Enum):
+    """动词的效果（语法设计 11.5）：试运行时只执行"计算、读取、显示"，写入只记录"""
+
+    PURE = "計算"
+    READ = "読み込み"
+    OUTPUT = "表示"
+    WRITE = "書き出し"
+
+
 class ParamKind(Enum):
     """参数槽的种类（语法设计 9.9）：决定写什么、传给实现函数什么"""
 
@@ -66,6 +75,13 @@ class VerbSpec:
     # 在编译时调用：infer(参数名 → 语法树, 参数名 → 类型, InferContext) → 类型。
     # 返回 None 表示类型未知（参数有错误时），出错时抛出 VerbError
     infer: Callable | None = None
+    # 编译时的额外检查（如「書き出す」：文件是否已存在），签名与 infer 相同，出错时抛出 VerbError
+    check: Callable | None = None
+    effect: Effect = Effect.PURE
+    # 读取、写出的动词：哪个参数是文件名（「説明」据此列出程序会碰哪些文件）
+    resource_param: str | None = None
+    # 「説明」「試し」中的说明，如「「{path}」を新規作成します」
+    explain: str | None = None
 
     def param_for(self, particle: str) -> Param | None:
         return next((p for p in self.params if p.particle == particle), None)
