@@ -15,7 +15,7 @@ from dandori.frontend.conjugation import Form, conjugate
 from dandori.frontend.tokens import TokenKind
 from dandori.plugin.registry import Registry
 
-PARTICLES = ("と", "を", "から", "で", "に", "は", "が", "まで")
+PARTICLES = ("と", "を", "から", "で", "に", "は", "が", "まで", "の")
 PRONOUNS = ("それ",)
 # 最长匹配保证「合計とする」切成 合計 / とする，而不是 合計 / と / する；
 # 「でない」「を超える」同理，不会被切成助词「で」「を」

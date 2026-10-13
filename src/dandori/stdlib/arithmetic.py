@@ -11,7 +11,6 @@ from dandori.types import Type
 
 _NUMBER = frozenset({Type.NUMBER})
 _NUMBERS = frozenset({Type.NUMBER, Type.NUMBER_LIST})
-_ANYTHING = frozenset(Type)
 
 
 def _as_list(value) -> list:
@@ -20,6 +19,7 @@ def _as_list(value) -> list:
 
 def tasu(ctx, numbers, base=None):
     """100と200を足す → 300　／　100に5を足す → 105"""
+    values.check_no_blanks(_as_list(numbers))
     operands = _as_list(numbers) if base is None else [base, *_as_list(numbers)]
     return reduce(values.add, operands)
 
@@ -31,6 +31,7 @@ def hiku(ctx, minuend, subtrahend):
 
 def kakeru(ctx, numbers, base=None):
     """2と3を掛ける → 6　／　5に3を掛ける → 15"""
+    values.check_no_blanks(_as_list(numbers))
     operands = _as_list(numbers) if base is None else [base, *_as_list(numbers)]
     return reduce(values.multiply, operands)
 
@@ -72,6 +73,6 @@ def register(registry: Registry) -> None:
     ))
     registry.add_verb(VerbSpec(
         "std.表示する", "表示する", Conjugation.SURU,
-        params=(Param("を", "value", _ANYTHING),),
+        params=(Param("を", "value", None),),
         returns=None, impl=hyouji,
     ))

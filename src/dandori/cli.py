@@ -19,6 +19,7 @@ from dandori.frontend.lexer import tokenize
 from dandori.frontend.lexicon import Lexicon
 from dandori.frontend.source import Source
 from dandori.plugin.registry import default_registry
+from dandori.runtime.interpreter import Context
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,16 +34,18 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     source = _load_source(args, parser)
+    # 「読み込む」的相对路径以程序文件所在的目录为准；-c 时为当前目录
+    base_dir = Path(args.file).resolve().parent if args.code is None else Path.cwd()
 
     if args.command == "実行":
-        errors = api.run(source)
+        errors = api.run(source, Context(base_dir=base_dir))
     elif args.command == "字句":
         tokens, errors = tokenize(source, Lexicon.from_registry(default_registry()))
         for token in tokens:
             line, col = source.line_col(token.span.start)
             print(f"{line:>3}:{col:<3} {token.describe()}")
     else:
-        result = api.compile_source(source)
+        result = api.compile_source(source, base_dir=base_dir)
         print(ast.dump(result.tree))
         errors = result.errors
 

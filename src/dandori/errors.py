@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass
 
 from dandori.frontend.source import Source, Span
+from dandori.text import display_width
 
 MESSAGES = {
     # E1xxx 字句解析
@@ -41,6 +41,7 @@ MESSAGES = {
     "E2015": "条件の書き方がわかりません（例：「合計が100以上」「合計>=100」）",
     "E2016": "「繰り返して」に対応する「ここまで。」がありません",
     "E2017": "繰り返しの書き方がわかりません（例：「3回繰り返して、」「月を1から12まで繰り返して、」）",
+    "E2018": "「の」の後に列の名前が必要です",
     # E3xxx 意味解析
     "E3001": "「{verb}」には「{particle}」は使えません",
     "E3002": "「{particle}」が二回使われています",
@@ -60,10 +61,22 @@ MESSAGES = {
     "E3016": "「{name}」はすでに使われています。繰り返しには別の名前を使ってください",
     "E3017": "「{name}」は繰り返しの中で変えられません",
     "E3018": "「{name}」は繰り返しの外では使えません",
+    "E3019": "「{file}」が見つかりません",
+    "E3020": "「{file}」の文字コードがわかりません（UTF-8 か Shift_JIS で保存してください）",
+    "E3021": "「{file}」の{row}行目：列の数が見出しと違います",
+    "E3022": "「{file}」の見出しに「{name}」が二つあります",
+    "E3023": "「{file}」の見出しの{col}列目が空です",
+    "E3024": "「読み込む」のファイル名は「」で直接書いてください",
+    "E3025": "「{table}」に「{column}」という列はありません（{hint}）",
+    "E3026": "「の」で列を取り出せるのは表だけです（{actual}）",
+    "E3027": "「{suffix}」のファイルはまだ読み込めません（CSV のみ）",
+    "E3028": "「{file}」が空です",
     # E5xxx 実行
     "E5001": "0で割ることはできません",
     "E5002": "回数は0以上の整数にしてください（{value}）",
     "E5003": "繰り返しの範囲は整数にしてください（{value}）",
+    "E5004": "計算する値に空欄があります（{where}）",
+    "E5005": "「{file}」を読み込めませんでした（{reason}）",
 }
 
 
@@ -78,11 +91,6 @@ class Diagnostic:
     @classmethod
     def make(cls, code: str, span: Span, **params: str) -> Diagnostic:
         return cls(code, MESSAGES[code].format(**params), span)
-
-
-def _display_width(text: str) -> int:
-    """终端里的显示宽度：全角字符占 2 格"""
-    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
 
 
 def render(diag: Diagnostic, source: Source) -> str:
@@ -105,5 +113,5 @@ def render(diag: Diagnostic, source: Source) -> str:
         f"{gutter}--> {source.name}:{line}:{col}",
         f"{gutter} |",
         f"{line} | {text}",
-        f"{gutter} | {' ' * _display_width(before)}{'^' * max(_display_width(marked), 1)}",
+        f"{gutter} | {' ' * display_width(before)}{'^' * max(display_width(marked), 1)}",
     ])

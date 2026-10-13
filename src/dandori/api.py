@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
@@ -25,12 +26,16 @@ class CompileResult:
     errors: list[Diagnostic]   # 按出现位置排序
 
 
-def compile_source(source: Source, registry: Registry | None = None) -> CompileResult:
-    """断词 → 構文解析 → 意味解析，收集所有阶段的错误"""
+def compile_source(source: Source, registry: Registry | None = None,
+                   base_dir: Path | None = None) -> CompileResult:
+    """断词 → 構文解析 → 意味解析，收集所有阶段的错误
+
+    base_dir：程序文件所在的目录，「読み込む」的相对路径以它为准（默认为当前目录）
+    """
     registry = registry or default_registry()
     tokens, lex_errors = tokenize(source, Lexicon.from_registry(registry))
     tree, parse_errors = parse(tokens, source)
-    program, analyze_errors = analyze(tree, registry, source)
+    program, analyze_errors = analyze(tree, registry, source, base_dir)
     errors = sorted(lex_errors + parse_errors + analyze_errors, key=lambda e: e.span.start)
     return CompileResult(tree, program, errors)
 
@@ -38,11 +43,12 @@ def compile_source(source: Source, registry: Registry | None = None) -> CompileR
 def run(source: Source, ctx: Context | None = None, registry: Registry | None = None
         ) -> list[Diagnostic]:
     """编译并执行。有编译错误时一行也不执行，返回所有错误"""
-    result = compile_source(source, registry)
+    ctx = ctx or Context()
+    result = compile_source(source, registry, ctx.base_dir)
     if result.errors:
         return result.errors
     try:
-        execute(result.program, ctx or Context())
+        execute(result.program, ctx)
     except ExecutionError as e:
         return [e.diagnostic]
     return []

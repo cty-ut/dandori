@@ -18,7 +18,8 @@
     名詞句    ＝ 式 { と 式 }                                 → _noun_phrase()
     式       ＝ 項 { (+|-) 項 }                              → _expr()
     項       ＝ 因子 { (×|÷) 因子 }                          → _term()
-    因子     ＝ 数 | 文字列 | それ | 名前 | ( 式 ) | - 因子     → _factor()
+    因子     ＝ 基本因子 { の ( 名前 | 文字列 ) }              → _factor()
+    基本因子  ＝ 数 | 文字列 | それ | 名前 | ( 式 ) | - 因子     → _primary()
 
 出错时的策略：一句话里出了错，就跳到下一个「。」，从下一句继续解析。
 这样一次就能报出整个程序里的所有错误。
@@ -30,6 +31,7 @@ from __future__ import annotations
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.conjugation import Form
+from dandori.frontend.normalize import normalize
 from dandori.frontend.source import Source, Span
 from dandori.frontend.tokens import Token, TokenKind as K
 
@@ -429,7 +431,27 @@ class _Parser:
         return left
 
     def _factor(self) -> ast.Expr:
-        """因子 ＝ 数 | 文字列 | それ | ( 式 ) | - 因子    最内层"""
+        """因子 ＝ 基本因子 { の ( 名前 | 文字列 ) }
+
+        「の」取表的列：明細の金額、明細の「支払い期日」（语法设计 8.4）
+        """
+        expr = self._primary()
+        while self._current().kind is K.PARTICLE and self._current().text == "の":
+            no = self._advance()
+            token = self._current()
+            if token.kind is K.NAME:
+                column = token.value
+            elif token.kind is K.STRING:
+                column = normalize(token.value)     # 列名经过正規化：ＩＤ 和 ID 是同一列
+            else:
+                self._error("E2018", no.span)
+                raise _SentenceError
+            self._advance()
+            expr = ast.ColumnRef(expr, column, token.span, Span(expr.span.start, token.span.end))
+        return expr
+
+    def _primary(self) -> ast.Expr:
+        """基本因子 ＝ 数 | 文字列 | それ | 名前 | ( 式 ) | - 因子    最内层"""
         token = self._current()
 
         if token.kind is K.NUMBER:

@@ -42,6 +42,15 @@ class Name:
 
 
 @dataclass(frozen=True)
+class ColumnRef:
+    """取表的列：明細の金額、明細の「支払い期日」"""
+    table: Expr
+    column: str      # 列名（正規化后）
+    column_span: Span
+    span: Span
+
+
+@dataclass(frozen=True)
 class ListExpr:
     """用「と」连起来的值：100と200"""
     items: tuple[Expr, ...]
@@ -75,7 +84,8 @@ class ErrorExpr:
     span: Span
 
 
-Expr = Number | String | Sore | Name | ListExpr | BinaryOp | Negate | PreviousResult | ErrorExpr
+Expr = (Number | String | Sore | Name | ColumnRef | ListExpr | BinaryOp | Negate
+        | PreviousResult | ErrorExpr)
 
 
 # ---------- 句子结构 ----------
@@ -268,6 +278,8 @@ def _describe(node) -> tuple[str, list]:
             return "それ", []
         case Name(name=name):
             return f"名前 {name}", []
+        case ColumnRef(table=table, column=column):
+            return f"列 {column}", [table]
         case PreviousResult():
             return "（前の結果）", []
         case ErrorExpr():

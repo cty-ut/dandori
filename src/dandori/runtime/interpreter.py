@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from dandori.errors import Diagnostic
@@ -18,6 +19,8 @@ from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundIf,
                                       BoundRangeLoop, BoundStatement)
 from dandori.plugin.registry import VerbError
 from dandori.runtime import values
+from dandori.table.interface import Table
+from dandori.types import TableType
 
 
 @dataclass
@@ -28,6 +31,7 @@ class Context:
     这样测试时可以把输出收集起来，以后也可以换成写日志、发到网页等。
     """
     output: Callable[[str], None] = field(default=print)
+    base_dir: Path = field(default_factory=Path.cwd)   # 程序文件所在的目录：相对路径以它为准
 
 
 class ExecutionError(Exception):
@@ -89,6 +93,11 @@ class _Executor:
                 last = step.spec.impl(self.ctx, **args)
             except VerbError as e:
                 raise ExecutionError(Diagnostic.make(e.code, step.span, **e.params)) from None
+            if isinstance(step.result_type, TableType) and isinstance(last, Table) \
+                    and last.type != step.result_type:
+                # 编译时读取的文件，执行时列定义变了（两次读取之间被修改）
+                self._fail("E5005", step.span, file=args.get("path", ""),
+                           reason="列が確認したときと変わっています")
         if statement.bind is not None:
             self.env[statement.bind] = last
             return None
@@ -118,6 +127,8 @@ class _Executor:
                 return last
             case ast.Name(name=name):
                 return self.env[name]
+            case ast.ColumnRef(table=table, column=column):
+                return self.evaluate(table, last).column(column)
             case ast.ListExpr(items=items):
                 return [self.evaluate(item, last) for item in items]
             case ast.Negate(operand=operand):

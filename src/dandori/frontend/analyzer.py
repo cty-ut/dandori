@@ -8,6 +8,7 @@
     5. 名字定义过吗？类型有没有被改变？   → 符号表（语法设计 5.5）
     6. もし文之后，变量是不是一定有值？   → 确定赋值（语法设计 6.6）
     7. 循环变量有没有被改动、被用到循环外？（语法设计 7.4）
+    8. 表有没有这一列？（语法设计 8.4）——「読み込む」在这里就读取文件，确定列定义
 
 能在运行前发现的错误，都在这里发现。通过检查的程序，执行时只可能遇到
 "运行时才知道"的问题（比如除以 0）。
@@ -15,13 +16,22 @@
 
 from __future__ import annotations
 
+import difflib
 from dataclasses import dataclass
+from pathlib import Path
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.source import Source, Span
-from dandori.plugin.registry import Param, Registry, VerbSpec
-from dandori.types import Type
+from dandori.plugin.registry import InferContext, Param, Registry, VerbError, VerbSpec
+from dandori.types import LIST_OF, TableType, Type, ValueType
+
+# "有结果，但类型未知"（如文件读取失败）。与 None（没有结果）区分开，避免后续连锁报错
+_UNKNOWN = object()
+
+
+def _known(t):
+    return None if t is _UNKNOWN else t
 
 
 # ---------- 意味解析的产物：对好号的程序 ----------
@@ -32,6 +42,7 @@ class BoundStep:
     spec: VerbSpec
     args: dict[str, ast.Expr]
     span: Span
+    result_type: ValueType | None = None    # 结果的类型（「読み込む」由编译时读取的文件决定）
 
 
 @dataclass(frozen=True)
@@ -84,23 +95,24 @@ class BoundProgram:
     sentences: tuple[BoundStatement, ...]
 
 
-def analyze(program: ast.Program, registry: Registry, source: Source
+def analyze(program: ast.Program, registry: Registry, source: Source, base_dir: Path | None = None
             ) -> tuple[BoundProgram, list[Diagnostic]]:
-    return _Analyzer(registry, source).program(program)
+    return _Analyzer(registry, source, base_dir or Path.cwd()).program(program)
 
 
 # ---------- 实现 ----------
 
 class _Analyzer:
-    def __init__(self, registry: Registry, source: Source):
+    def __init__(self, registry: Registry, source: Source, base_dir: Path):
         self.registry = registry
         self.source = source
+        self.infer_context = InferContext(base_dir)
         self.errors: list[Diagnostic] = []
         # 最近一个手順的结果类型。None 表示"没有结果"：
         # 程序刚开始，或者上一步是「表示する」这种不产生结果的动词
-        self.last_type: Type | None = None
+        self.last_type: ValueType | None = None
         # 符号表：名字 → 类型。类型为 None 表示定义时的值有错误，类型未知
-        self.symbols: dict[str, Type | None] = {}
+        self.symbols: dict[str, ValueType | None] = {}
         # 此时"一定有值"的名字。symbols 记录"出现过的名字和类型"，
         # defined 记录"不论走了哪个分支，此时都已经赋过值"的名字
         self.defined: set[str] = set()
@@ -233,7 +245,7 @@ class _Analyzer:
         self.last_type = None                          # 赋值不产生结果（语法设计 5.5）
         return BoundAssignment(assignment.target.name, assignment.value, assignment.span)
 
-    def _define(self, target: ast.NameRef, new: Type | None) -> None:
+    def _define(self, target: ast.NameRef, new: ValueType | None) -> None:
         """登记名字。重新赋值可以，改变类型不行，循环变量不能改"""
         if target.name in self.loop_vars:
             self._error("E3017", target.span, name=target.name)
@@ -255,11 +267,11 @@ class _Analyzer:
 
         bind = sentence.bind
         if bind is not None:
-            last = steps[-1].spec
-            if last.returns is None:
-                self._error("E3011", bind.span, verb=last.dictionary_form)
+            last = steps[-1]
+            if last.result_type is None:
+                self._error("E3011", bind.span, verb=last.spec.dictionary_form)
             else:
-                self._define(bind, last.returns)
+                self._define(bind, _known(last.result_type))
             self.last_type = None
         return BoundSentence(tuple(steps), sentence.span, bind.name if bind else None)
 
@@ -291,29 +303,40 @@ class _Analyzer:
                 fill_failed = True
 
         # 3. 必需的参数都齐了吗（E3004 已经报过的就不重复报）
+        missing = [p for p in spec.params if p.required and p.name not in bound]
         if not fill_failed:
-            for param in spec.params:
-                if param.required and param.name not in bound:
-                    self._error("E3003", step.verb.span, verb=verb, particle=param.particle)
+            for param in missing:
+                self._error("E3003", step.verb.span, verb=verb, particle=param.particle)
 
         # 4. 类型检查
         for param in spec.params:
             if param.name in bound:
                 self._check_arg(spec, param, bound[param.name])
 
-        self.last_type = spec.returns
-        return BoundStep(spec, bound, step.span)
+        # 5. 结果的类型。取决于参数的（「読み込む」），由动词定义的 infer 在编译时决定
+        result = spec.returns
+        if spec.infer is not None:
+            result = _UNKNOWN
+            if not missing and not fill_failed:
+                try:
+                    result = spec.infer(bound, self.infer_context)
+                except VerbError as e:
+                    span = next(iter(bound.values())).span if bound else step.span
+                    self._error(e.code, span, **e.params)
+
+        self.last_type = result
+        return BoundStep(spec, bound, step.span, result)
 
     # ---------- 类型 ----------
 
     def _check_arg(self, spec: VerbSpec, param: Param, expr: ast.Expr) -> None:
         actual = self._type_of(expr)
-        if actual is not None and actual not in param.accepts:
+        if actual is not None and param.accepts is not None and actual not in param.accepts:
             self._error("E3007", expr.span, verb=spec.dictionary_form, particle=param.particle,
                         expected=_describe_types(param.accepts),
                         actual=self._describe_actual(expr, actual))
 
-    def _type_of(self, expr: ast.Expr) -> Type | None:
+    def _type_of(self, expr: ast.Expr) -> ValueType | None:
         """推断类型。返回 None 表示"已经报过错，类型未知"，调用方就不再追加错误"""
         match expr:
             case ast.Number():
@@ -323,9 +346,11 @@ class _Analyzer:
             case ast.Sore():
                 if self.last_type is None:
                     self._error("E3006", expr.span)
-                return self.last_type
+                return _known(self.last_type)
             case ast.PreviousResult():
-                return self.last_type
+                return _known(self.last_type)
+            case ast.ColumnRef():
+                return self._column_type(expr)
             case ast.Name(name=name):
                 if name not in self.symbols:
                     self._error("E3010", expr.span, name=name)
@@ -343,7 +368,11 @@ class _Analyzer:
                 types = [self._type_of(item) for item in items]
                 if None in types:
                     return None
-                return Type.NUMBER_LIST if all(t is Type.NUMBER for t in types) else Type.LIST
+                if all(t is Type.NUMBER for t in types):
+                    return Type.NUMBER_LIST
+                if all(t is Type.STRING for t in types):
+                    return Type.STRING_LIST
+                return Type.LIST
             case ast.BinaryOp(left=left, right=right):
                 self._expect_number(left)
                 self._expect_number(right)
@@ -353,12 +382,29 @@ class _Analyzer:
                 return Type.NUMBER
         raise TypeError(f"未知のノード：{expr!r}")
 
+    def _column_type(self, expr: ast.ColumnRef) -> Type | None:
+        """明細の金額：明細必须是表，而且有「金額」这一列"""
+        table = self._type_of(expr.table)
+        if table is None:
+            return None
+        if not isinstance(table, TableType):
+            self._error("E3026", expr.span, actual=self._describe_actual(expr.table, table))
+            return None
+        column = table.column(expr.column)
+        if column is None:
+            close = difflib.get_close_matches(expr.column, table.names, n=1, cutoff=0.5)
+            hint = f"「{close[0]}」のことですか？" if close else f"列：{'、'.join(table.names)}"
+            self._error("E3025", expr.column_span, table=self.source.slice(expr.table.span),
+                        column=self.source.slice(expr.column_span).strip("「」"), hint=hint)
+            return None
+        return LIST_OF[column]
+
     def _expect_number(self, expr: ast.Expr) -> None:
         actual = self._type_of(expr)
         if actual is not None and actual is not Type.NUMBER:
             self._error("E3008", expr.span, actual=self._describe_actual(expr, actual))
 
-    def _describe_actual(self, expr: ast.Expr, actual: Type) -> str:
+    def _describe_actual(self, expr: ast.Expr, actual: ValueType) -> str:
         if isinstance(expr, ast.PreviousResult):
             return f"前の結果は{actual.value}です"
         text = self.source.slice(expr.span)
@@ -390,4 +436,6 @@ def _uses_sore(expr: ast.Expr) -> bool:
             return _uses_sore(left) or _uses_sore(right)
         case ast.Negate(operand=operand):
             return _uses_sore(operand)
+        case ast.ColumnRef(table=table):
+            return _uses_sore(table)
     return False

@@ -7,19 +7,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from dandori.frontend.conjugation import Conjugation
-from dandori.types import Type
+from dandori.types import Type, ValueType
 
 
 @dataclass(frozen=True)
 class Param:
     """参数槽：用助词标记（语法设计 3.2）"""
 
-    particle: str               # 助词，如「を」
-    name: str                   # 实现函数的参数名
-    accepts: frozenset[Type]    # 接受的类型
+    particle: str                       # 助词，如「を」
+    name: str                           # 实现函数的参数名
+    accepts: frozenset[Type] | None     # 接受的类型；None 表示什么都接受（如「表示する」）
     required: bool = True
 
 
@@ -33,13 +34,22 @@ class VerbError(Exception):
 
 
 @dataclass(frozen=True)
+class InferContext:
+    """推断类型时可以用到的信息（编译时）"""
+    base_dir: Path                   # 程序文件所在的目录：相对路径以它为准
+
+
+@dataclass(frozen=True)
 class VerbSpec:
     id: str                          # 完整标识，如 "std.足す"
     dictionary_form: str             # 辞书形，如 "足す"
     conjugation: Conjugation         # 活用类型
     params: tuple[Param, ...]        # 参数槽
-    returns: Type | None             # 结果的类型；None 表示没有结果（如 表示する）
+    returns: ValueType | None        # 结果的类型；None 表示没有结果（如 表示する）
     impl: Callable                   # 实现：impl(ctx, **按参数名传入的值)
+    # 结果的类型取决于参数时（如「読み込む」：取决于文件的列），在编译时调用：
+    # infer(参数名 → 语法树, InferContext) → 类型。出错时抛出 VerbError
+    infer: Callable | None = None
 
     def param_for(self, particle: str) -> Param | None:
         return next((p for p in self.params if p.particle == particle), None)
@@ -66,8 +76,9 @@ class Registry:
 
 def default_registry() -> Registry:
     """登记了标准库的注册表"""
-    from dandori.stdlib import arithmetic
+    from dandori.stdlib import arithmetic, files
 
     registry = Registry()
     arithmetic.register(registry)
+    files.register(registry)
     return registry

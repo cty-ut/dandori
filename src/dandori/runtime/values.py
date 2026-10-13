@@ -9,9 +9,12 @@ from __future__ import annotations
 from decimal import Decimal
 
 from dandori.plugin.registry import VerbError
+from dandori.table.interface import BLANK, Column, Table
+from dandori.text import display_width, pad
+from dandori.types import Type
 
 Number = int | Decimal
-Value = Number | str | list
+Value = Number | str | list | Table
 
 
 def canonical(n: Number) -> Number:
@@ -42,10 +45,35 @@ def divide(a: Number, b: Number) -> Number:
     return canonical(Decimal(a) / Decimal(b))
 
 
+def check_no_blanks(numbers: list) -> None:
+    """要计算的值里有空欄时报错，并指出它来自哪个文件的第几行（语法设计 8.7）"""
+    for i, n in enumerate(numbers):
+        if n is BLANK:
+            where = numbers.origin(i) if isinstance(numbers, Column) else "並びの中"
+            raise VerbError("E5004", where=where)
+
+
 def format_value(value: Value) -> str:
     """显示用的文字"""
+    if isinstance(value, Table):
+        return format_table(value)
+    if value is BLANK:
+        return "（空欄）"
     if isinstance(value, list):
         return "、".join(format_value(v) for v in value)
     if isinstance(value, Decimal):
         return format(value.normalize(), "f")
     return str(value)
+
+
+def format_table(table: Table) -> str:
+    """按列对齐显示：全角字符占两格，数右对齐，空欄显示为空白"""
+    header = table.display_names
+    cells = [["" if v is BLANK else format_value(v) for v in row] for row in table.rows]
+    numeric = [t is Type.NUMBER for _, t in table.type.columns]
+    widths = [max([display_width(h)] + [display_width(row[i]) for row in cells])
+              for i, h in enumerate(header)]
+    lines = ["  ".join(pad(h, w, right=num) for h, w, num in zip(header, widths, numeric)).rstrip()]
+    for row in cells:
+        lines.append("  ".join(pad(c, w, right=num) for c, w, num in zip(row, widths, numeric)).rstrip())
+    return "\n".join(lines)
