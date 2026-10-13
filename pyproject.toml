@@ -16,6 +16,7 @@ ai = ["anthropic>=1.13", "openai>=3.29"]
 [project.scripts]
 dandori = "dandori.cli:main"
 dandori-ai = "dandori_ai.cli:main"
+dandori-platform = "dandori_platform.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
