@@ -26,6 +26,9 @@ class CompileResult:
     tree: ast.Program
     program: BoundProgram
     errors: list[Diagnostic]   # 按出现位置排序
+    # 规则文件：通过设定文读取的文件（名義対応.csv、会社休日.csv）。
+    # 与每天变化的数据文件不同，它们是业务规则：内容变了结果就变，平台把它们和程序一起批准
+    rule_files: tuple[str, ...] = ()
 
     @property
     def resources(self) -> tuple[Resource, ...]:
@@ -59,12 +62,19 @@ class CompileResult:
 
     @property
     def schedule(self):
-        """「実行の予定」（平台设计 3）；没有写、或有编译错误时为 None"""
+        """「実行の予定」（平台设计 3）；没有写、或写法不对时为 None
+
+        程序的其他部分有错误（如数据文件不在）时也返回予定：
+        平台要按时运行它，把错误记入履历，而不是悄悄地不运行。
+        """
         from dandori.stdlib.japan.schedule import parse_schedule
         text = self.settings.get(("実行", "予定"))
-        if text is None or self.errors:
+        if text is None:
             return None
-        return parse_schedule(text)
+        try:
+            return parse_schedule(text)
+        except VerbError:
+            return None
 
 
 class ScheduleError(Exception):
@@ -103,7 +113,11 @@ def compile_source(source: Source, registry: Registry | None = None,
     tree, parse_errors = parse(tokens, source)
     program, analyze_errors = analyze(tree, registry, source, base_dir)
     errors = sorted(lex_errors + parse_errors + analyze_errors, key=lambda e: e.span.start)
-    return CompileResult(tree, program, errors)
+    result = CompileResult(tree, program, errors)
+    from dandori.plugin.registry import SettingKind
+    result.rule_files = tuple(value for (ns, key), value in result.settings.items()
+                              if (spec := registry.setting(ns, key)) and spec.kind is SettingKind.FILE)
+    return result
 
 
 @dataclass

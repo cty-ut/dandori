@@ -184,7 +184,7 @@ def test_cli_flow(tmp_path, folder, capsys):
     assert "すでに承認されています" in capsys.readouterr().out
     edit(folder / "集計.dandori", "毎月25日", "毎月20日")
     assert run_cli(["一覧"], tmp_path) == 0
-    assert "⚠ 変更あり（承認待ち）　最後の承認：田中" in capsys.readouterr().out
+    assert "⚠ 変更あり（承認待ち）（プログラム）　最後の承認：田中" in capsys.readouterr().out
     assert run_cli(["承認", "集計", "--承認者", "鈴木", "--はい"], tmp_path) == 0
     assert "+実行の予定は、「毎月20日" in capsys.readouterr().out
 
@@ -192,6 +192,238 @@ def test_cli_flow(tmp_path, folder, capsys):
 def test_cli_errors(tmp_path, folder, capsys):
     assert run_cli(["承認", "無い", "--承認者", "田中"], tmp_path) == 1
     assert "登録されていません" in capsys.readouterr().err
+
+
+# ---------- 実行（8-3） ----------
+
+def approved(platform, folder, who="田中"):
+    platform.register(folder / "集計.dandori")
+    platform.approve(platform.review("集計"), who)
+
+
+def log_record(run):
+    import json
+    return json.loads(Path(run.log_path).with_suffix(".json").read_text(encoding="utf-8"))
+
+
+def test_manual_run(platform, folder):
+    platform.register(folder / "集計.dandori")
+    first = platform.run("集計")
+    assert first.status == "承認待ち" and first.error == "まだ承認されていません"
+    assert not (folder / "出力").exists()
+    platform.approve(platform.review("集計"), "田中")
+    second = platform.run("集計")
+    assert second.status == "正常終了" and second.slot is None and not second.late
+    assert (folder / "出力" / "集計.csv").exists()
+    assert log_record(second)["today"] == "2026-10-14"
+    # 手动运行可以重复；这次因为文件已经存在而出错，错误记入履历
+    third = platform.run("集計")
+    assert third.status == "エラー" and "集計.csv" in third.error
+    assert [r.status for r in platform.history("集計")] == ["エラー", "正常終了", "承認待ち"]
+
+
+def test_run_saves_display_output(platform, folder):
+    edit(folder / "集計.dandori", "「出力/集計.csv」に書き出す。", "表示する。")
+    edit(folder / "集計.dandori", "  書き出し：「出力」フォルダ\n", "")
+    approved(platform, folder)
+    run = platform.run("集計")
+    assert run.status == "正常終了"
+    shown = Path(run.log_path).with_name(Path(run.log_path).stem + "_表示.txt").read_text(encoding="utf-8")
+    assert "山田商事" in shown
+
+
+def test_changed_program_is_not_run(platform, folder):
+    approved(platform, folder)
+    edit(folder / "集計.dandori", "毎月25日", "毎月20日")
+    run = platform.run("集計")
+    assert run.status == "承認待ち" and run.error == "承認の後に変更されています：プログラム"
+    assert not (folder / "出力").exists()
+
+
+def test_missing_file_is_recorded(platform, folder):
+    approved(platform, folder)
+    (folder / "集計.dandori").unlink()
+    run = platform.run("集計")
+    assert run.status == "エラー" and "ありません" in run.error
+
+
+# ---------- 調度（8-3） ----------
+
+def test_tick_runs_on_schedule(tmp_path, folder):
+    clock = Clock(at(2026, 10, 14, 10))
+    platform = Platform(tmp_path, clock=clock)
+    approved(platform, folder)
+    assert platform.tick() == []
+    clock.moment = at(2026, 10, 23, 9)                 # 25日是星期日 → 23日（金）
+    [run] = platform.tick()
+    assert run.status == "正常終了" and run.slot == "2026-10-23T09:00:00+09:00"
+    assert not run.late and run.missed == 0
+    assert log_record(run)["today"] == "2026-10-23"
+    clock.moment = at(2026, 10, 23, 9, 10)
+    assert platform.tick() == []                       # 同一个预定时间只运行一次
+    platform.close()
+
+
+def test_catch_up_once_with_slot_date_as_today(tmp_path, folder):
+    clock = Clock(at(2026, 10, 14, 10))
+    platform = Platform(tmp_path, clock=clock)
+    approved(platform, folder)
+    clock.moment = at(2026, 12, 28, 10)                # 10/23、11/25、12/25 都错过了
+    [run] = platform.tick()
+    assert run.slot == "2026-12-25T09:00:00+09:00" and run.late and run.missed == 2
+    assert log_record(run)["today"] == "2026-12-25"    # 「今日」是预定的日子
+    assert platform.tick() == []
+    platform.close()
+
+
+def test_slots_before_approval_are_not_run(tmp_path, folder):
+    clock = Clock(at(2026, 10, 23, 10))                # 当天 9 点之后才批准
+    platform = Platform(tmp_path, clock=clock)
+    approved(platform, folder)
+    assert platform.tick() == []
+    clock.moment = at(2026, 11, 25, 9, 1)
+    assert [r.slot for r in platform.tick()] == ["2026-11-25T09:00:00+09:00"]
+    platform.close()
+
+
+def test_waiting_for_approval_is_not_caught_up(tmp_path, folder):
+    clock = Clock(at(2026, 10, 14, 10))
+    platform = Platform(tmp_path, clock=clock)
+    approved(platform, folder)
+    edit(folder / "集計.dandori", "取引先ごとに", "取引先ごとに")      # 内容不变
+    edit(folder / "集計.dandori", "明細とする。", "明細とする。\n")   # 改了一个字
+    clock.moment = at(2026, 10, 23, 9)
+    [run] = platform.tick()
+    assert run.status == "承認待ち"
+    clock.moment = at(2026, 10, 23, 12)
+    platform.approve(platform.review("集計"), "田中")
+    assert platform.tick() == []                       # 批准了也不补
+    platform.close()
+
+
+def test_schedule_follows_approved_version(tmp_path, folder):
+    clock = Clock(at(2026, 10, 14, 10))
+    platform = Platform(tmp_path, clock=clock)
+    approved(platform, folder)
+    edit(folder / "集計.dandori", "毎月25日", "毎月15日")   # 没有批准：按批准的 25 日
+    clock.moment = at(2026, 10, 15, 9, 30)
+    assert platform.tick() == []
+    clock.moment = at(2026, 10, 23, 9)
+    assert [r.status for r in platform.tick()] == ["承認待ち"]
+    platform.close()
+
+
+def test_missing_data_is_an_error_not_silence(tmp_path, folder):
+    clock = Clock(at(2026, 10, 14, 10))
+    platform = Platform(tmp_path, clock=clock)
+    approved(platform, folder)
+    (folder / "明細.csv").unlink()
+    clock.moment = at(2026, 10, 23, 9)
+    [run] = platform.tick()
+    assert run.status == "エラー" and "明細.csv" in run.error
+    platform.close()
+
+
+def test_two_platforms_do_not_run_twice(tmp_path, folder):
+    clock = Clock(at(2026, 10, 14, 10))
+    first = Platform(tmp_path, clock=clock)
+    approved(first, folder)
+    second = Platform(tmp_path, clock=clock)
+    clock.moment = at(2026, 10, 23, 9)
+    assert len(first.tick()) == 1 and second.tick() == []
+    first.close()
+    second.close()
+
+
+def test_interrupted_runs(platform, folder):
+    approved(platform, folder)
+    platform.store.start_run("集計", None, "2026-10-14T09:00:00+09:00", None)
+    assert platform.interrupt_running() == 1
+    assert platform.history("集計")[0].status == "中断"
+
+
+# ---------- 規則のファイル（8-4） ----------
+
+RULED = """この処理が使うもの：
+  読み込み：「会社休日.csv」
+ここまで。
+暦の会社休日は「会社休日.csv」とする。
+実行の予定は、「毎月第3会社営業日 9時」とする。
+今日+1会社営業日を表示する。
+"""
+
+
+@pytest.fixture
+def ruled(tmp_path):
+    work = tmp_path / "暦"
+    work.mkdir()
+    (work / "会社休日.csv").write_text("日付\n2026/11/02\n", encoding="utf-8")
+    (work / "暦.dandori").write_text(RULED, encoding="utf-8")
+    return work
+
+
+def test_rule_file_change_requires_approval(platform, ruled):
+    platform.register(ruled / "暦.dandori")
+    review = platform.review("暦")
+    assert review.snapshot.rule_files["会社休日.csv"]["sha256"]
+    platform.approve(review, "田中")
+    assert platform.statuses()[0].state == "承認済み"
+    assert platform.statuses()[0].next_run == "2026年11月6日（金）09:00"
+
+    (ruled / "会社休日.csv").write_text("日付\n2026/11/02\n2026/11/04\n", encoding="utf-8")
+    status = platform.statuses()[0]
+    assert status.state == "変更あり（承認待ち）" and status.changes == ["「会社休日.csv」"]
+    run = platform.run("暦")
+    assert run.status == "承認待ち" and "「会社休日.csv」" in run.error
+    review = platform.review("暦")
+    assert review.changes == ["「会社休日.csv」"] and review.diff == ""
+    assert "+2026/11/04" in review.rule_diffs["会社休日.csv"]
+    platform.approve(review, "鈴木")
+    assert platform.run("暦").status == "正常終了"
+
+
+def test_missing_rule_file_cannot_be_approved(platform, ruled):
+    platform.register(ruled / "暦.dandori")
+    (ruled / "会社休日.csv").unlink()
+    review = platform.review("暦")
+    assert not review.approvable and any("会社休日.csv" in e for e in review.errors)
+
+
+def test_shift_jis_rule_file_diff(platform, ruled):
+    platform.register(ruled / "暦.dandori")
+    platform.approve(platform.review("暦"), "田中")
+    (ruled / "会社休日.csv").write_bytes("日付,名前\n2026/11/02,創立記念日\n".encode("cp932"))
+    assert "創立記念日" in platform.review("暦").rule_diffs["会社休日.csv"]
+
+
+# ---------- 命令行（8-3） ----------
+
+def test_cli_run_history_and_start(tmp_path, folder, capsys):
+    assert run_cli(["登録", str(folder / "集計.dandori")], tmp_path) == 0
+    assert run_cli(["実行", "集計"], tmp_path) == 1
+    assert "⚠ " in capsys.readouterr().out
+    assert run_cli(["承認", "集計", "--承認者", "田中", "--はい"], tmp_path) == 0
+    capsys.readouterr()
+    assert run_cli(["起動", "--一回"], tmp_path) == 0
+    assert "集計" not in capsys.readouterr().out      # 还没到时间
+    assert run_cli(["実行", "集計"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "集計：正常終了" in out and "実行記録：" in out
+    assert run_cli(["履歴"], tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "集計：正常終了" in out and "⚠ " in out and "承認待ち：まだ承認されていません" in out
+
+
+def test_cli_start_loop_and_lock(tmp_path, folder, capsys):
+    from dandori_platform.lock import single_instance
+    with single_instance(tmp_path / ".dandori" / "起動.lock"):
+        assert run_cli(["起動", "--一回"], tmp_path) == 1
+    assert "すでに起動しています" in capsys.readouterr().err
+
+    def stop(_):
+        raise KeyboardInterrupt
+    assert cli.main(["起動", "--場所", str(tmp_path)], sleep=stop, clock=Clock(at(2026, 10, 14, 10))) == 0
+    assert "止めました" in capsys.readouterr().out
 
 
 def test_platform_uses_only_public_api():

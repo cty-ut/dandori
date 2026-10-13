@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS approvals (
     program     TEXT NOT NULL REFERENCES programs(name),
     sha256      TEXT NOT NULL,
     text        TEXT NOT NULL,          -- 程序全文：下次批准时显示差异
+    rule_files  TEXT NOT NULL DEFAULT '{}',  -- 规则文件：JSON {路径: {"sha256", "text"}}
     approver    TEXT NOT NULL,
     approved_at TEXT NOT NULL
 );
@@ -53,6 +55,7 @@ class Approval:
     text: str
     approver: str
     approved_at: str
+    rule_files: dict          # 路径 → {"sha256", "text"}
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,10 @@ class Store:
         self.db = sqlite3.connect(folder / "platform.db", isolation_level=None)   # 自动提交
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
+        # 8-2 时创建的数据库没有 rule_files 列
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(approvals)")}
+        if "rule_files" not in columns:
+            self.db.execute("ALTER TABLE approvals ADD COLUMN rule_files TEXT NOT NULL DEFAULT '{}'")
 
     def close(self) -> None:
         self.db.close()
@@ -99,15 +106,16 @@ class Store:
 
     # ---------- 承認 ----------
 
-    def add_approval(self, program: str, sha256: str, text: str, approver: str, now: str) -> None:
-        self.db.execute("INSERT INTO approvals (program, sha256, text, approver, approved_at) VALUES (?, ?, ?, ?, ?)",
-                        (program, sha256, text, approver, now))
+    def add_approval(self, program: str, sha256: str, text: str, rule_files: dict, approver: str, now: str) -> None:
+        self.db.execute("INSERT INTO approvals (program, sha256, text, rule_files, approver, approved_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (program, sha256, text, json.dumps(rule_files, ensure_ascii=False), approver, now))
 
     def latest_approval(self, program: str) -> Approval | None:
         """有效的只有最后一次批准：改回以前批准过的版本，也要重新批准"""
-        row = self.db.execute("SELECT sha256, text, approver, approved_at FROM approvals WHERE program = ? "
-                              "ORDER BY id DESC LIMIT 1", (program,)).fetchone()
-        return Approval(*row) if row else None
+        row = self.db.execute("SELECT sha256, text, approver, approved_at, rule_files FROM approvals "
+                              "WHERE program = ? ORDER BY id DESC LIMIT 1", (program,)).fetchone()
+        return Approval(*row[:4], json.loads(row[4])) if row else None
 
     # ---------- 履歴 ----------
 
@@ -133,6 +141,11 @@ class Store:
             "SELECT id, program, slot, started_at, finished_at, status, late, missed, error, log_path "
             f"FROM runs {where} ORDER BY id DESC LIMIT ?", (*args, limit)).fetchall()
         return [Run(*r[:6], bool(r[6]), *r[7:]) for r in rows]
+
+    def run(self, run_id: int) -> Run:
+        r = self.db.execute("SELECT id, program, slot, started_at, finished_at, status, late, missed, error, log_path "
+                            "FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return Run(*r[:6], bool(r[6]), *r[7:])
 
     def last_slot(self, program: str) -> str | None:
         row = self.db.execute("SELECT MAX(slot) FROM runs WHERE program = ?", (program,)).fetchone()
