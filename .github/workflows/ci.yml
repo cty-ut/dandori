@@ -17,8 +17,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
       - run: pip install ruff
@@ -40,18 +40,21 @@ jobs:
             python: "3.14"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev,ai]"
-      - run: pytest -q --cov --cov-report=term --cov-fail-under=90
+      - run: pytest -q --cov --cov-report=term --cov-fail-under=90 --junitxml=junit.xml -o junit_family=xunit1
+      - name: 失败的测试显示为注释
+        if: failure()
+        run: python .github/scripts/annotate.py junit.xml
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
       - run: pip install build

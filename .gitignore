@@ -8,3 +8,6 @@ evals/結果/
 coverage.xml
 dist/
 build/
+# 执行日志（运行程序时在程序旁边生成）
+実行記録/
+junit.xml
