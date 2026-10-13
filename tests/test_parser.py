@@ -1,0 +1,172 @@
+from decimal import Decimal
+
+import pytest
+
+from dandori.frontend import ast
+from dandori.frontend.conjugation import Form
+from dandori.frontend.lexer import tokenize
+from dandori.frontend.lexicon import Lexicon
+from dandori.frontend.parser import parse
+from dandori.frontend.source import Source
+from dandori.plugin.registry import default_registry
+
+
+@pytest.fixture(scope="module")
+def lexicon():
+    return Lexicon.from_registry(default_registry())
+
+
+@pytest.fixture
+def run(lexicon):
+    def run(code):
+        source = Source(code)
+        tokens, lex_errors = tokenize(source, lexicon)
+        assert lex_errors == []
+        return parse(tokens, source)
+    return run
+
+
+def only_sentence(program):
+    assert len(program.sentences) == 1
+    return program.sentences[0]
+
+
+def value_of(step, particle):
+    return next(arg.value for arg in step.args if arg.particle == particle)
+
+
+def test_basic_sentence(run):
+    program, errors = run("100と200を足して表示する。")
+    assert errors == []
+    tasu, hyouji = only_sentence(program).steps
+
+    assert (tasu.verb.lemma, tasu.verb.form) == ("足す", Form.TE)
+    target = value_of(tasu, "を")
+    assert isinstance(target, ast.ListExpr)
+    assert [item.value for item in target.items] == [100, 200]
+
+    assert (hyouji.verb.lemma, hyouji.verb.form) == ("表示する", Form.DICTIONARY)
+    assert hyouji.args == ()
+
+
+def test_particles_keep_written_order(run):
+    # 構文解析只记录写了什么，助词对应参数槽是意味解析的事
+    program, errors = run("3を10から引く。")
+    assert errors == []
+    step = only_sentence(program).steps[0]
+    assert [arg.particle for arg in step.args] == ["を", "から"]
+
+
+def test_multiplication_binds_tighter(run):
+    program, _ = run("100+200×3を表示する。")
+    expr = value_of(only_sentence(program).steps[0], "を")
+    # 100 + (200 × 3)
+    assert expr.op == "+"
+    assert expr.left.value == 100
+    assert expr.right.op == "*"
+    assert (expr.right.left.value, expr.right.right.value) == (200, 3)
+
+
+def test_left_associative(run):
+    program, _ = run("10-3-2を表示する。")
+    expr = value_of(only_sentence(program).steps[0], "を")
+    # (10 - 3) - 2，而不是 10 - (3 - 2)
+    assert expr.op == "-"
+    assert expr.left.op == "-"
+    assert expr.right.value == 2
+
+
+def test_parentheses(run):
+    program, _ = run("(100+200)×3を表示する。")
+    expr = value_of(only_sentence(program).steps[0], "を")
+    assert expr.op == "*"
+    assert expr.left.op == "+"
+
+
+def test_negation_and_decimal(run):
+    program, _ = run("-1.5を表示する。")
+    expr = value_of(only_sentence(program).steps[0], "を")
+    assert isinstance(expr, ast.Negate)
+    assert expr.operand.value == Decimal("1.5")
+
+
+def test_and_as_list_vs_particle(run):
+    # と 后面是值 → 列表；と 后面是动词 → 助词
+    program, errors = run("1と2を足す。3を4と足す。")
+    assert errors == []
+    first, second = program.sentences
+    assert isinstance(value_of(first.steps[0], "を"), ast.ListExpr)
+    assert [arg.particle for arg in second.steps[0].args] == ["を", "と"]
+
+
+def test_sore_and_strings(run):
+    program, errors = run("「こんにちは」を表示する。それを表示する。")
+    assert errors == []
+    first, second = program.sentences
+    assert value_of(first.steps[0], "を").value == "こんにちは"
+    assert isinstance(value_of(second.steps[0], "を"), ast.Sore)
+
+
+def test_comma_after_te_form(run):
+    program, errors = run("2と3を掛けて、10から引いて表示する。")
+    assert errors == []
+    assert [s.verb.lemma for s in only_sentence(program).steps] == ["掛ける", "引く", "表示する"]
+
+
+def test_sentence_may_span_lines(run):
+    program, errors = run("100と200を足して\n  表示する。")
+    assert errors == []
+    assert len(only_sentence(program).steps) == 2
+
+
+def test_spans_point_to_source(run):
+    code = "100と200を足す。"
+    program, _ = run(code)
+    step = only_sentence(program).steps[0]
+    assert code[step.span.start:step.span.end] == "100と200を足す"
+    assert code[step.args[0].span.start:step.args[0].span.end] == "100と200を"
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("100を表示する", ["E2001"]),
+    ("100を足す表示する。", ["E2003"]),
+    ("100を表示して。", ["E2004"]),
+    ("(1+2を表示する。", ["E2005"]),
+    ("100と200を。", ["E2006"]),
+    ("100表示する。", ["E2007"]),
+    ("100、200を足す。", ["E2002"]),
+    ("を表示する。", ["E2008"]),
+])
+def test_errors(run, code, expected):
+    _, errors = run(code)
+    assert [e.code for e in errors] == expected
+
+
+def test_missing_period_before_next_line(run):
+    # 忘了「。」但下一句写在下一行：报 E2001，下一句照常解析
+    program, errors = run("100を表示する\n200を表示する。")
+    assert [e.code for e in errors] == ["E2001"]
+    assert len(program.sentences) == 2
+
+
+def test_recovers_and_reports_all_errors(run):
+    program, errors = run("100表示する。\n200を表示する。\n(1を表示する。")
+    assert [e.code for e in errors] == ["E2007", "E2005"]
+    # 中间那句没有错，照常解析出来
+    assert len(program.sentences) == 1
+    assert value_of(program.sentences[0].steps[0], "を").value == 200
+
+
+def test_dump(run):
+    program, _ = run("100+200×3を表示する。")
+    assert ast.dump(program) == "\n".join([
+        "プログラム",
+        "└─ 文",
+        "   └─ 手順 表示する（辞書形）",
+        "      └─ を",
+        "         └─ ＋",
+        "            ├─ 数 100",
+        "            └─ ×",
+        "               ├─ 数 200",
+        "               └─ 数 3",
+    ])

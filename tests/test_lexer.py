@@ -1,0 +1,112 @@
+from decimal import Decimal
+
+import pytest
+
+from dandori.frontend.conjugation import Conjugation, Form
+from dandori.frontend.lexer import tokenize
+from dandori.frontend.lexicon import Lexicon
+from dandori.frontend.source import Source
+from dandori.frontend.tokens import TokenKind as K
+from dandori.plugin.registry import Registry, VerbSpec, default_registry
+
+
+@pytest.fixture(scope="module")
+def lexicon():
+    return Lexicon.from_registry(default_registry())
+
+
+def lex(code, lexicon):
+    tokens, errors = tokenize(Source(code), lexicon)
+    return tokens, errors
+
+
+def kinds_and_texts(tokens):
+    return [(t.kind, t.text) for t in tokens if t.kind is not K.EOF]
+
+
+def test_basic_sentence(lexicon):
+    tokens, errors = lex("100と200を足して表示する。", lexicon)
+    assert errors == []
+    assert kinds_and_texts(tokens) == [
+        (K.NUMBER, "100"), (K.PARTICLE, "と"), (K.NUMBER, "200"), (K.PARTICLE, "を"),
+        (K.VERB, "足して"), (K.VERB, "表示する"), (K.PERIOD, "。"),
+    ]
+    tashite = tokens[4]
+    assert (tashite.verb_id, tashite.lemma, tashite.form) == ("std.足す", "足す", Form.TE)
+
+
+def test_all_stage1_examples_have_no_errors(lexicon):
+    program = """
+        「こんにちは」を表示する。
+        10から3を引いて表示する。
+        3を10から引いて表示する。
+        10を2で割って表示する。
+        (100+200)×3を表示する。
+        2と3を掛けて、10から引いて表示する。
+        100に5を足して表示する。
+        100と200を足す。それを表示する。
+    """
+    _, errors = lex(program, lexicon)
+    assert errors == []
+
+
+def test_fullwidth_input_keeps_original_text(lexicon):
+    tokens, errors = lex("（１００＋２００）×３を表示する。", lexicon)
+    assert errors == []
+    assert [t.text for t in tokens[:7]] == ["（", "１００", "＋", "２００", "）", "×", "３"]
+    assert tokens[1].value == 100
+    assert tokens[5].value == "*"   # 演算子的标准写法
+
+
+def test_decimal_uses_decimal_not_float(lexicon):
+    tokens, _ = lex("0.1と0.2を足す。", lexicon)
+    assert tokens[0].value == Decimal("0.1")
+    assert tokens[2].value == Decimal("0.2")
+
+
+def test_string_content_is_original(lexicon):
+    tokens, errors = lex("「１００円」を表示する。", lexicon)
+    assert errors == []
+    assert tokens[0].kind is K.STRING
+    assert tokens[0].value == "１００円"
+
+
+def test_longest_match():
+    # 「と」（助词）和「とる」（动词）同时存在时，「とる」必须整体匹配
+    registry = Registry()
+    registry.add_verb(VerbSpec("test.とる", "とる", Conjugation.GODAN))
+    lexicon = Lexicon.from_registry(registry)
+    tokens, errors = lex("1とる。", lexicon)
+    assert errors == []
+    assert kinds_and_texts(tokens) == [(K.NUMBER, "1"), (K.VERB, "とる"), (K.PERIOD, "。")]
+
+
+def test_positions(lexicon):
+    source = Source("100を表示する。\n  それを表示する。")
+    tokens, _ = tokenize(source, lexicon)
+    sore = next(t for t in tokens if t.kind is K.PRONOUN)
+    assert source.line_col(sore.span.start) == (2, 3)
+
+
+def test_unknown_word_reported_once(lexicon):
+    tokens, errors = lex("100とねこを足す。", lexicon)
+    assert [(e.code, e.message) for e in errors] == [("E1001", "「ねこ」という言葉はわかりません")]
+    # 出错后继续断词
+    assert (K.PARTICLE, "を") in kinds_and_texts(tokens)
+
+
+def test_unclosed_string(lexicon):
+    tokens, errors = lex("「閉じてない\n100を表示する。", lexicon)
+    assert [e.code for e in errors] == ["E1002"]
+    # 下一行不受影响
+    assert (K.NUMBER, "100") in kinds_and_texts(tokens)
+
+
+def test_long_vowel_between_numbers(lexicon):
+    _, errors = lex("10ー5を表示する。", lexicon)
+    assert [e.code for e in errors] == ["E1003"]
+
+
+def test_multiple_errors_reported_together(lexicon):
+    _, errors = lex("ねこを表示する。\n10ー5を表示する。", lexicon)
+    assert [e.code for e in errors] == ["E1001", "E1003"]
