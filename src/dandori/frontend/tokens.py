@@ -12,6 +12,7 @@ from dandori.frontend.source import Span
 
 class TokenKind(Enum):
     NUMBER = "数"
+    DATE = "日付"
     STRING = "文字列"
     PARTICLE = "助詞"
     VERB = "動詞"

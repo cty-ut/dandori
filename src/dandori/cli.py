@@ -6,6 +6,7 @@
     dandori 字句 ファイル.dandori        断词结果（调试用）
     dandori 構文 ファイル.dandori        语法树（调试用）
     dandori 実行 -c "100と200を足して表示する。"   也可以直接传程序
+    dandori 実行 ファイル.dandori --今日 2026年10月31日   重现某一天的执行（语法设计 13.7）
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from dandori import api
+from dandori import api, dates
 from dandori.errors import Diagnostic, render
 from dandori.frontend import ast
 from dandori.frontend.lexer import tokenize
@@ -39,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
         sub = commands.add_parser(name, help=help_text)
         sub.add_argument("file", nargs="?", help=".dandori ファイル")
         sub.add_argument("-c", dest="code", help="プログラムを直接渡す")
+        if name in ("実行", "試し"):
+            sub.add_argument("--今日", dest="today", type=_parse_today,
+                             help="「今日」の日付を指定する（例：2026年10月31日、2026/10/31）")
 
     args = parser.parse_args(argv)
     source = _load_source(args, parser)
@@ -47,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("実行", "試し"):
         ctx = Context(base_dir=base_dir, dry_run=args.command == "試し")
+        if args.today is not None:
+            ctx.today = args.today
         errors = api.run(source, ctx)
         if not errors:
             _report_files(ctx)
@@ -92,6 +98,16 @@ def _report(errors: list[Diagnostic], source: Source) -> None:
     for error in errors:
         print(file=sys.stderr)
         print(render(error, source), file=sys.stderr)
+
+
+def _parse_today(text: str):
+    try:
+        value = dates.parse_cell(text)
+    except dates.InvalidDate:
+        value = None
+    if value is None:
+        raise argparse.ArgumentTypeError(f"「{text}」は日付として読めません（例：2026年10月31日）")
+    return value
 
 
 def _load_source(args: argparse.Namespace, parser: argparse.ArgumentParser) -> Source:

@@ -14,6 +14,8 @@ class Type(Enum):
     LIST = "並び"                 # 混合的并列，如 1と「あ」
     MONEY = "金額"
     MONEY_LIST = "金額の並び"      # 100円と200円、金額的列
+    DATE = "日付"
+    DATE_LIST = "日付の並び"
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,9 @@ class TableType:
 
 ValueType = Type | TableType
 
-LIST_OF = {Type.NUMBER: Type.NUMBER_LIST, Type.STRING: Type.STRING_LIST, Type.MONEY: Type.MONEY_LIST}
+LIST_OF = {Type.NUMBER: Type.NUMBER_LIST, Type.STRING: Type.STRING_LIST, Type.MONEY: Type.MONEY_LIST,
+           Type.DATE: Type.DATE_LIST}
+ELEMENT_OF = {v: k for k, v in LIST_OF.items()}
 
 # 可以参与计算、比较大小的类型（宽松的规则：金額与数互通，语法设计 12.4）
 NUMERIC = frozenset({Type.NUMBER, Type.MONEY})

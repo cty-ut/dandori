@@ -43,7 +43,9 @@ _LOOP_KEYWORDS = ("繰り返して", "回繰り返して")
 # 判断一句话是不是繰り返し文时，遇到这些就可以停止往后看
 _NOT_LOOP_KEYWORDS = ("もし", "ならば", "とする", "のそれぞれについて") + _BLOCK_KEYWORDS
 _JUMP_KEYWORDS = ("繰り返しをやめる", "次に進む")
-_COMPARISON_KEYWORDS = {"以上": ">=", "以下": "<=", "未満": "<", "を超える": ">", "でない": "<>"}
+_COMPARISON_KEYWORDS = {"以上": ">=", "以下": "<=", "未満": "<", "を超える": ">", "でない": "<>",
+                        # 日付用（语法设计 13.4）
+                        "以降": ">=", "以前": "<=", "より前": "<", "より後": ">"}
 _MONO_KEYWORDS = ("のもの", "もの")
 _SORT_KEYWORDS = {"大きい順": True, "小さい順": False}   # 是否降序
 
@@ -305,11 +307,11 @@ class _Parser:
                 raise _SentenceError
             right = self._expr()
             word = self._current()
-            op = "="                                    # 合計が0ならば：没有比较词就是"等于"
+            op, used = "=", None                        # 合計が0ならば：没有比较词就是"等于"
             if word.kind is K.KEYWORD and word.text in _COMPARISON_KEYWORDS:
-                op = _COMPARISON_KEYWORDS[word.text]
+                op, used = _COMPARISON_KEYWORDS[word.text], word.text
                 self._advance()
-            return ast.Comparison(op, left, right, Span(left.span.start, self._previous().span.end))
+            return ast.Comparison(op, left, right, Span(left.span.start, self._previous().span.end), used)
 
         self._error("E2015", left.span)
         raise _SentenceError
@@ -447,8 +449,9 @@ class _Parser:
         「明細から金額が…のもの」中，从「明細」开始看时第一个结构性的词是「から」，所以不是。
         """
         i = self.pos
-        while (self.tokens[i].kind in (K.NAME, K.NUMBER, K.STRING, K.PRONOUN, K.OPERATOR,
+        while (self.tokens[i].kind in (K.NAME, K.NUMBER, K.DATE, K.STRING, K.PRONOUN, K.OPERATOR,
                                        K.LPAREN, K.RPAREN, K.UNKNOWN)
+               or (self.tokens[i].kind is K.KEYWORD and self.tokens[i].text == "今日")
                or (self.tokens[i].kind is K.PARTICLE and self.tokens[i].text == "の")):
             i += 1
         first = self.tokens[i]
@@ -562,6 +565,12 @@ class _Parser:
         if token.kind is K.NUMBER:
             self._advance()
             return ast.Number(token.value, token.span)
+        if token.kind is K.DATE:
+            self._advance()
+            return ast.DateLiteral(token.value, token.span)
+        if token.kind is K.KEYWORD and token.text == "今日":
+            self._advance()
+            return ast.Today(token.span)
         if token.kind is K.STRING:
             self._advance()
             return ast.String(token.value, token.span)
@@ -618,8 +627,8 @@ class _Parser:
     @staticmethod
     def _starts_value(token: Token) -> bool:
         """这个 Token 能否作为一个值的开头"""
-        return (token.kind in (K.NUMBER, K.STRING, K.PRONOUN, K.NAME, K.LPAREN, K.UNKNOWN)
-                or (token.kind is K.KEYWORD and token.text == "空欄")
+        return (token.kind in (K.NUMBER, K.DATE, K.STRING, K.PRONOUN, K.NAME, K.LPAREN, K.UNKNOWN)
+                or (token.kind is K.KEYWORD and token.text in ("空欄", "今日"))
                 or (token.kind is K.OPERATOR and token.value == "-"))
 
     def _same_line(self, a: Span, b: Span) -> bool:
@@ -665,4 +674,4 @@ def _columns_as_subjects(condition: ast.Condition) -> ast.Condition:
     left = condition.left
     if isinstance(left, ast.String):
         left = ast.Name(normalize(left.value), left.span)
-    return ast.Comparison(condition.op, left, condition.right, condition.span)
+    return ast.Comparison(condition.op, left, condition.right, condition.span, condition.word)

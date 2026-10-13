@@ -222,7 +222,7 @@ def test_declared_term_as_column(data):
     code = "用語：支払い期日。" + READ + "明細のそれぞれについて、支払い期日を表示する。ここまで。"
     errors = run(Source(code), Context(output=output.append, base_dir=data))
     assert errors == []
-    assert output == ["2026-10-31", "（空欄）", "2026-11-30"]
+    assert output == ["2026年10月31日", "（空欄）", "2026年11月30日"]   # 日付列（阶段 4-2）
 
 
 def test_quoted_subject_outside_loop_is_text(data):

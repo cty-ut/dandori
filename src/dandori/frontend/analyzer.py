@@ -26,8 +26,12 @@ from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.source import Source, Span
 from dandori.plugin.registry import Effect, InferContext, Param, ParamKind, Registry, VerbError, VerbSpec
+from dandori import dates
 from dandori.money import Money
-from dandori.types import LIST_OF, NUMERIC, NUMERIC_LISTS, TableType, Type, ValueType
+from dandori.types import ELEMENT_OF, LIST_OF, NUMERIC, NUMERIC_LISTS, TableType, Type, ValueType
+
+_PROPERTY_TYPES = {"数": Type.NUMBER, "文字列": Type.STRING, "日付": Type.DATE}
+_ORDERED = NUMERIC | {Type.DATE}          # 可以比较大小的类型
 
 # "有结果，但类型未知"（如文件读取失败）。与 None（没有结果）区分开，避免后续连锁报错
 _UNKNOWN = object()
@@ -301,16 +305,32 @@ class _Analyzer:
         right = self._type_of(comparison.right)
 
         if comparison.op in (">=", "<=", "<", ">"):
-            # 以上・以下・未満・超える：只能比较数（金額也可以，语法设计 12.4）
+            # 比较大小：数、金額（语法设计 12.4）、日付（语法设计 13.4）
             for expr, actual in ((comparison.left, left), (comparison.right, right)):
-                if actual is not None and actual not in NUMERIC:
+                if actual is not None and actual not in _ORDERED:
                     self._error("E3012", expr.span, op=ast.COMPARISON_WORDS[comparison.op],
                                 actual=self._describe_actual(expr, actual))
+                    return
+            if left is not None and right is not None and (left is Type.DATE) != (right is Type.DATE):
+                self._error("E3013", comparison.span, left=left.value, right=right.value)
+                return
+            self._check_comparison_word(comparison, left)
         elif left is not None and right is not None:
-            # 等于・不等于：类型相同的数或文字列；数与金額之间也可以
-            same = left is right and left in (Type.NUMBER, Type.STRING, Type.MONEY)
+            # 等于・不等于：类型相同的数、文字列、日付；数与金額之间也可以
+            same = left is right and left in (Type.NUMBER, Type.STRING, Type.MONEY, Type.DATE)
             if not same and not (left in NUMERIC and right in NUMERIC):
                 self._error("E3013", comparison.span, left=left.value, right=right.value)
+
+    def _check_comparison_word(self, comparison: ast.Comparison, left) -> None:
+        """日付用「以前・以降・より前・より後」，数用「以上・以下・未満・超える」（语法设计 13.4）"""
+        word = comparison.word
+        if word is None or left is None:
+            return                                   # 符号对两者都可以
+        is_date_word = word in ast.DATE_COMPARISON_WORDS.values()
+        if left is Type.DATE and not is_date_word:
+            self._error("E3047", comparison.span)
+        elif left is not Type.DATE and is_date_word:
+            self._error("E3048", comparison.span, word=word)
 
     def _assignment(self, assignment: ast.Assignment) -> BoundAssignment:
         """税率は0.1とする。"""
@@ -546,6 +566,10 @@ class _Analyzer:
         match expr:
             case ast.Number(value=value):
                 return Type.MONEY if isinstance(value, Money) else Type.NUMBER
+            case ast.DateLiteral(value=value):
+                return Type.DATE if value is not None else None       # None：不存在的日期，已报错
+            case ast.Today():
+                return Type.DATE
             case ast.String():
                 return Type.STRING
             case ast.Sore():
@@ -588,20 +612,33 @@ class _Analyzer:
                     return Type.NUMBER_LIST
                 if all(t in NUMERIC for t in types):
                     return Type.MONEY_LIST                  # 100円と5：宽松的规则
+                if all(t is Type.DATE for t in types):
+                    return Type.DATE_LIST
                 if all(t is Type.STRING for t in types):
                     return Type.STRING_LIST
                 return Type.LIST
             case ast.BinaryOp(op=op, left=left, right=right):
                 return self._arithmetic_type(expr, op, self._expect_number(left), self._expect_number(right))
             case ast.Negate(operand=operand):
-                return self._expect_number(operand) or Type.NUMBER
+                operand_type = self._expect_number(operand)
+                if operand_type is Type.DATE:
+                    self._error("E3045", expr.span)
+                return operand_type or Type.NUMBER
         raise TypeError(f"未知のノード：{expr!r}")
 
     def _column_type(self, expr: ast.ColumnRef) -> Type | None:
-        """明細の金額：明細必须是表，而且有「金額」这一列"""
+        """明細の金額：明細必须是表，而且有「金額」这一列。
+        期日の月末：对日付（或日付的並び）使用时，取日付的属性（语法设计 13.5）"""
         table = self._type_of(expr.table)
         if table is None:
             return None
+        if table in (Type.DATE, Type.DATE_LIST):
+            prop = dates.PROPERTIES.get(expr.column)
+            if prop is None:
+                self._error("E3049", expr.column_span, name=expr.column)
+                return None
+            result = _PROPERTY_TYPES[prop[1]]
+            return result if table is Type.DATE else LIST_OF[result]
         if not isinstance(table, TableType):
             self._error("E3026", expr.span, actual=self._describe_actual(expr.table, table))
             return None
@@ -615,9 +652,9 @@ class _Analyzer:
         return LIST_OF[column]
 
     def _expect_number(self, expr: ast.Expr) -> Type | None:
-        """算式的一边：必须是数或金額。返回它的类型（不是数时报错并返回 None）"""
+        """算式的一边：必须是数、金額或日付。返回它的类型（不是时报错并返回 None）"""
         actual = self._type_of(expr)
-        if actual is not None and actual not in NUMERIC:
+        if actual is not None and actual not in _ORDERED:
             self._error("E3008", expr.span, actual=self._describe_actual(expr, actual))
             return None
         return actual
@@ -625,6 +662,8 @@ class _Analyzer:
     def _arithmetic_type(self, expr: ast.BinaryOp, op: str, left, right) -> Type:
         """金額与数宽松互通（语法设计 12.4）：有一方是金額，结果就是金額。
         金額÷金額 是比例（数）；金額×金額、数÷金額 没有意义"""
+        if Type.DATE in (left, right):
+            return self._date_arithmetic_type(expr, op, left, right)
         left_money, right_money = left is Type.MONEY, right is Type.MONEY
         if op == "*" and left_money and right_money:
             self._error("E3043", expr.span)
@@ -634,6 +673,18 @@ class _Analyzer:
             if left_money and right_money:
                 return Type.NUMBER
         return Type.MONEY if left_money or right_money else Type.NUMBER
+
+    def _date_arithmetic_type(self, expr: ast.BinaryOp, op: str, left, right) -> Type | None:
+        """日付 ± 数 → 日付；日付 − 日付 → 数（天数）；其他都不行（语法设计 13.3）"""
+        if op == "+" and Type.NUMBER in (left, right) and Type.DATE in (left, right):
+            return Type.DATE
+        if op == "-" and left is Type.DATE and right is Type.NUMBER:
+            return Type.DATE
+        if op == "-" and left is Type.DATE and right is Type.DATE:
+            return Type.NUMBER
+        if left is not None and right is not None:
+            self._error("E3045", expr.span)
+        return None
 
     def _describe_actual(self, expr: ast.Expr, actual: ValueType) -> str:
         if isinstance(expr, ast.PreviousResult):
@@ -670,6 +721,8 @@ def _describe_types(types: frozenset) -> str:
         return "表"
     if types <= NUMERIC | NUMERIC_LISTS:
         return "数"
+    if types <= NUMERIC | NUMERIC_LISTS | {Type.DATE}:
+        return "数か日付"
     return "か".join(t.value for t in types)
 
 

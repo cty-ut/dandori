@@ -17,6 +17,7 @@ from dandori.types import NUMERIC, NUMERIC_LISTS, Type
 
 _SCALAR = NUMERIC                          # 数、金額
 _SCALAR_OR_LIST = NUMERIC | NUMERIC_LISTS  # 数、金額、以及它们的並び
+_DATE_OR_SCALAR = NUMERIC | {Type.DATE}    # 期日に30日を足す、期日から今日を引く
 
 
 def _as_list(value) -> list:
@@ -24,10 +25,11 @@ def _as_list(value) -> list:
 
 
 def tasu(ctx, numbers, base=None):
-    """100と200を足す → 300　／　100に5を足す → 105"""
+    """100と200を足す → 300　／　100に5を足す → 105　／　期日に30日を足す → 日付"""
     values.check_no_blanks(_as_list(numbers))
-    operands = _as_list(numbers) if base is None else [base, *_as_list(numbers)]
-    return reduce(values.add, operands, 0)          # 空的列（如筛选后没有行）合计为 0
+    if base is not None:
+        return reduce(values.add, _as_list(numbers), base)
+    return reduce(values.add, _as_list(numbers), 0)  # 空的列（如筛选后没有行）合计为 0
 
 
 def hiku(ctx, minuend, subtrahend):
@@ -60,8 +62,18 @@ def _is_money(t) -> bool:
 
 
 def infer_add(args, types, ctx):
-    """足す・引く：有一方是金額，结果就是金額"""
-    return Type.MONEY if any(_is_money(t) for t in types.values()) else Type.NUMBER
+    """足す・引く：有一方是金額，结果就是金額。
+    日付 ± 数 → 日付；日付 − 日付 → 天数（语法设计 13.3）"""
+    found = list(types.values())
+    if Type.DATE in found:
+        others = [t for t in found if t is not Type.DATE]
+        if found.count(Type.DATE) == 2 and "minuend" in types and types["minuend"] is Type.DATE:
+            return Type.NUMBER                          # 期日から今日を引く
+        if found.count(Type.DATE) == 1 and all(t is Type.NUMBER for t in others) and (
+                types.get("base") is Type.DATE or types.get("minuend") is Type.DATE):
+            return Type.DATE
+        raise VerbError("E3045")
+    return Type.MONEY if any(_is_money(t) for t in found) else Type.NUMBER
 
 
 def infer_multiply(args, types, ctx):
@@ -103,13 +115,13 @@ def register(registry: Registry) -> None:
     registry.add_verb(VerbSpec(
         "std.足す", "足す", Conjugation.GODAN,
         params=(Param("を", "numbers", _SCALAR_OR_LIST),
-                Param("に", "base", _SCALAR, required=False)),
+                Param("に", "base", _DATE_OR_SCALAR, required=False)),
         returns=Type.NUMBER, impl=tasu, infer=infer_add,
     ))
     registry.add_verb(VerbSpec(
         "std.引く", "引く", Conjugation.GODAN,
-        params=(Param("から", "minuend", _SCALAR),
-                Param("を", "subtrahend", _SCALAR)),
+        params=(Param("から", "minuend", _DATE_OR_SCALAR),
+                Param("を", "subtrahend", _DATE_OR_SCALAR)),
         returns=Type.NUMBER, impl=hiku, infer=infer_add,
     ))
     registry.add_verb(VerbSpec(

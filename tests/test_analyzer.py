@@ -83,7 +83,7 @@ def test_type_error_messages():
     result = compile_source(Source("「あ」と1を足す。「こんにちは」を引いて表示する。"))
     messages = [e.message for e in result.errors]
     assert "「足す」の「〜を」には数が必要です（『「あ」と1』は並びです）" in messages
-    assert "「引く」の「〜を」には数が必要です（「こんにちは」は文字列です）" in messages
+    assert "「引く」の「〜を」には数か日付が必要です（「こんにちは」は文字列です）" in messages
 
 
 @pytest.mark.parametrize("code", [

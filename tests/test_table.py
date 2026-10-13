@@ -207,7 +207,7 @@ def test_display_and_sum(tmp_path):
     write(tmp_path, "明細.csv", MEISAI)
     output, errors = run_in(tmp_path, READ + "明細の取引先を表示する。明細の「支払い期日」を表示する。")
     assert errors == []
-    assert output == ["山田商事、佐藤物産", "2026-10-31、（空欄）"]
+    assert output == ["山田商事、佐藤物産", "2026年10月31日、（空欄）"]
 
 
 def test_table_display_is_aligned(tmp_path):
@@ -260,5 +260,5 @@ def test_table_example_file():
     assert output[1:] == [
         "山田商事、佐藤物産、山田商事、ＡＢＣ株式会社、佐藤物産",
         "290300",
-        "2026-10-31、2026-10-31、2026-11-30、2026-11-30、（空欄）",
+        "2026年10月31日、2026年10月31日、2026年11月30日、2026年11月30日、（空欄）",
     ]

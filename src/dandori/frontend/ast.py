@@ -23,6 +23,19 @@ class Number:
 
 
 @dataclass(frozen=True)
+class DateLiteral:
+    """日付：2026年10月31日、令和8年10月31日。value 为 None 表示不存在的日期（已报错）"""
+    value: object
+    span: Span
+
+
+@dataclass(frozen=True)
+class Today:
+    """今日：由执行上下文提供（语法设计 13.7）"""
+    span: Span
+
+
+@dataclass(frozen=True)
 class String:
     value: str
     span: Span
@@ -112,7 +125,7 @@ class ErrorExpr:
     span: Span
 
 
-Expr = (Number | String | Sore | Name | ColumnRef | ListExpr | BinaryOp | Negate
+Expr = (Number | DateLiteral | Today | String | Sore | Name | ColumnRef | ListExpr | BinaryOp | Negate
         | PreviousResult | ErrorExpr | Blank | RowFilter | SortKey | BlanksOf)
 
 
@@ -171,11 +184,12 @@ class Assignment:
 
 @dataclass(frozen=True)
 class Comparison:
-    """比较：合計が100以上、合計>=100"""
+    """比较：合計が100以上、合計>=100、期日が今日以降"""
     op: str          # 标准写法：>= <= < > = <>
     left: Expr
     right: Expr
     span: Span
+    word: str | None = None   # 用的是哪个词（以上、以降…）；符号时为 None。用于检查日付与数的用词
 
 
 @dataclass(frozen=True)
@@ -266,6 +280,7 @@ def column_name(expr) -> str | None:
 
 
 COMPARISON_WORDS = {">=": "以上", "<=": "以下", "<": "未満", ">": "を超える", "=": "等しい", "<>": "でない"}
+DATE_COMPARISON_WORDS = {">=": "以降", "<=": "以前", "<": "より前", ">": "より後"}
 
 
 def dump(node) -> str:
@@ -336,6 +351,10 @@ def _describe(node) -> tuple[str, list]:
             return "マイナス", [operand]
         case Number(value=value):
             return f"数 {value}", []
+        case DateLiteral(value=value):
+            return f"日付 {value}", []
+        case Today():
+            return "今日", []
         case String(value=value):
             return f"文字列 「{value}」", []
         case Sore():

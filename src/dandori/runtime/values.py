@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from decimal import Decimal
+
+from dandori import dates
 
 from dandori.money import Money
 from dandori.plugin.registry import VerbError
@@ -35,11 +38,25 @@ def _wrap(result: Number, money: bool):
     return Money(result) if money else canonical(result)
 
 
+def _days(n) -> timedelta:
+    if isinstance(n, Decimal):
+        raise VerbError("E5011", value=format_value(n))
+    return timedelta(days=n)
+
+
 def add(a, b):
+    # 日付 + 数：数是天数（语法设计 13.3）
+    if isinstance(a, date):
+        return a + _days(b)
+    if isinstance(b, date):
+        return b + _days(a)
     return _wrap(_amount(a) + _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
 
 def subtract(a, b):
+    # 日付 − 日付 = 天数；日付 − 数 = 日付
+    if isinstance(a, date):
+        return (a - b).days if isinstance(b, date) else a - _days(b)
     return _wrap(_amount(a) - _amount(b), isinstance(a, Money) or isinstance(b, Money))
 
 
@@ -93,6 +110,8 @@ def format_value(value: Value) -> str:
         return "、".join(format_value(v) for v in value)
     if isinstance(value, Money):
         return value.format()
+    if isinstance(value, date):
+        return dates.format_western(value)        # 西暦（语法设计 13.6）
     if isinstance(value, Decimal):
         return format(value.normalize(), "f")
     return str(value)

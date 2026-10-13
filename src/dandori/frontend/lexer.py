@@ -2,7 +2,7 @@
 
 核心思路只有一个：用一根"指针"（pos）从左往右扫，每到一个位置，按顺序尝试：
     1. 空白 → 跳过
-    2. 数字 → 一直读到不是数字为止
+    2. 日付（2026年10月31日、令和8年10月31日）、数字 → 一直读到不是数字为止
     3. 「   → 一直读到 」为止
     4. 记号 → + - * / ( ) 、 。 以及比较符号 >= <= < > = <> != ≧ ≦ ≠
     5. 查词典，取最长匹配 → 助词、动词、指示语、キーワード、声明过的用語
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from dandori import dates
 from dandori.errors import Diagnostic
 from dandori.frontend.lexicon import Entry, Lexicon
 from dandori.frontend.normalize import normalize
@@ -69,6 +70,9 @@ class _Lexer:
 
             if ch in _WHITESPACE:
                 self.pos += 1
+            elif (match := dates.CODE_ERA.match(self.text, self.pos)) or (
+                    ch in _DIGITS and (match := dates.CODE_WESTERN.match(self.text, self.pos))):
+                self._date(match)
             elif ch in _DIGITS or (ch == "¥" and self._peek(1) in _DIGITS):
                 self._number()
             elif ch == "「":
@@ -136,6 +140,8 @@ class _Lexer:
         if self._peek() == "円":
             yen = True
             self.pos += 1
+        elif self._peek() == "日" and not yen:
+            self.pos += 1                              # 30日：天数，就是数 30（语法设计 13.2）
 
         if not ok:
             self.errors.append(Diagnostic.make("E1011", Span(start, self.pos),
@@ -144,6 +150,18 @@ class _Lexer:
             total = int(total)                         # 1.5万 → 15000
         value = Money(total) if yen else total
         self._emit(TokenKind.NUMBER, start, self.pos, value=value, advance=False)
+
+    def _date(self, match) -> None:
+        """日付：2026年10月31日、令和8年10月31日（语法设计 13.2）。必须在名字之前识别：
+        「令和8年10月31日」全是汉字和数字，否则会被当成一个名字"""
+        start, end = match.span()
+        try:
+            value = dates.from_code(match, era_match=not match.group(0)[0].isdigit())
+        except dates.InvalidDate as e:
+            hint = f"（{e.hint}）" if e.hint else ""
+            self.errors.append(Diagnostic.make("E1012", Span(start, end), word=match.group(0), hint=hint))
+            value = None
+        self._emit(TokenKind.DATE, start, end, value=value)
 
     def _plain_number(self) -> int | Decimal:
         """不带单位的数：100、1,000、3.14。千位分隔符只在后面恰好跟着 3 位数字时才算"""

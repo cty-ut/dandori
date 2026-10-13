@@ -21,7 +21,7 @@ from dandori.types import NUMERIC, NUMERIC_LISTS, TableType, Type
 
 _TABLE = frozenset({TableType})
 _NUMBERS = NUMERIC_LISTS                            # 数或金額的列
-_SCALAR = NUMERIC | {Type.STRING}
+_SCALAR = NUMERIC | {Type.STRING, Type.DATE}
 
 
 def column_names(expr: ast.Expr) -> list[str]:

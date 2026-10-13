@@ -5,6 +5,7 @@
 - 数字：千位分隔符「1,000」、全角数字「１００」 → 都识别为数
 - 编码：以 0 开头的「00123」「0600001」（取引先コード、郵便番号、電話番号） → 文字列，保留开头的 0
 - 金額：「1,000円」「¥1,000」；会计的负数写法「△1,000」「▲1,000」（语法设计 12.3）
+- 日付：2026/10/31、2026-10-31、令和8年10月31日、R8.10.31 等（语法设计 13.8）
 - 空格子 → 空欄（不是 0）
 """
 
@@ -16,6 +17,9 @@ import re
 from decimal import Decimal
 from pathlib import Path
 
+from datetime import date
+
+from dandori import dates
 from dandori.connectors import ConnectorError
 from dandori.frontend.normalize import normalize
 from dandori.money import Money
@@ -60,7 +64,8 @@ def read_csv(path: Path, display_name: str) -> Table:
         is_number = (cells and all(p is not None for p in parsed)
                      and not any(_CODE.match(_strip_sign(normalize(c))) for c in cells))
         if not is_number:
-            types.append(Type.STRING)
+            is_date = cells and all(_parse_date(c, display_name, raw_rows, i) is not None for c in cells)
+            types.append(Type.DATE if is_date else Type.STRING)
         elif any(isinstance(p, Money) for p in parsed):
             types.append(Type.MONEY)
         else:
@@ -118,9 +123,21 @@ def _parse_number(cell: str):
     return Money(value) if money else value
 
 
+def _parse_date(cell: str, display_name: str, raw_rows, column: int):
+    """日付，或 None。形式上是日期但不存在时，报错并指出行号（语法设计 13.8）"""
+    try:
+        return dates.parse_cell(normalize(cell))
+    except dates.InvalidDate as e:
+        row = next(i for i, r in enumerate(raw_rows, start=2) if r[column] == cell)
+        hint = f"（{e.hint}）" if e.hint else ""
+        raise ConnectorError("E3050", file=display_name, row=str(row), value=cell, hint=hint) from None
+
+
 def _convert(cell: str, column_type: Type):
     if cell == "":
         return BLANK
+    if column_type is Type.DATE:
+        return dates.parse_cell(normalize(cell))
     if column_type is Type.MONEY:
         value = _parse_number(cell)
         return value if isinstance(value, Money) else Money(value)
@@ -150,6 +167,8 @@ def _format_cell(value) -> str:
         return ""
     if isinstance(value, Money):
         value = value.amount                           # 不带单位：Excel 打开后仍是数
+    if isinstance(value, date):
+        return dates.format_csv(value)                 # 2026/10/31：Excel 识别为日期
     if isinstance(value, Decimal):
         return format(value.normalize(), "f")
     return str(value)

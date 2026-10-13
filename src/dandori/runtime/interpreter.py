@@ -11,9 +11,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Callable
 
+from dandori import dates
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
 from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundEachLoop, BoundIf,
@@ -37,6 +39,8 @@ class Context:
     # 写出的内容先暂存在这里，程序全部成功后才写入（语法设计 11.4）
     transaction: Transaction = field(default_factory=Transaction)
     dry_run: bool = False                              # 「試し」：执行全部，但不写入
+    # 「今日」：程序中唯一随时间变化的值，由执行上下文提供（语法设计 13.7）。固定日本时间
+    today: date = field(default_factory=dates.today_jst)
 
 
 class ExecutionError(Exception):
@@ -200,8 +204,10 @@ class _Executor:
 
     def evaluate(self, expr: ast.Expr, last, row: Row | None = None):
         match expr:
-            case ast.Number(value=value) | ast.String(value=value):
+            case ast.Number(value=value) | ast.String(value=value) | ast.DateLiteral(value=value):
                 return value
+            case ast.Today():
+                return self.ctx.today
             case ast.Blank():
                 return BLANK
             case ast.Sore() | ast.PreviousResult():
@@ -212,7 +218,10 @@ class _Executor:
                     return source.values[name]     # 条件、逐行处理中的列名：这一行的值
                 return self.env[name]
             case ast.ColumnRef(table=table, column=column):
-                return self.evaluate(table, last, row).column(column)
+                target = self.evaluate(table, last, row)
+                if isinstance(target, date) or (isinstance(target, list) and not isinstance(target, Table)):
+                    return _date_property(target, column)      # 期日の月末（语法设计 13.5）
+                return target.column(column)
             case ast.ListExpr(items=items):
                 return [self.evaluate(item, last, row) for item in items]
             case ast.Negate(operand=operand):
@@ -248,6 +257,13 @@ class _Executor:
         """当前行的空欄参与计算：报错，指出是哪个文件的第几行"""
         if value is BLANK:
             raise ExecutionError(Diagnostic.make("E5004", expr.span, where=self._origin(expr, row)))
+
+
+def _date_property(target, name: str):
+    function = dates.PROPERTIES[name][0]
+    if isinstance(target, list):
+        return [v if v is BLANK else function(v) for v in target]
+    return function(target)
 
 
 _OPERATORS = {
