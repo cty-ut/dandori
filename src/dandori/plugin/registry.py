@@ -71,7 +71,7 @@ class SettingKind(Enum):
     COLUMN_PAIR = "「入金の振込依頼人と請求のフリガナ」"   # 两个列 → ((列名, 类型), (列名, 类型))
     COLUMN = "「請求の支払期日」"                           # 一个列 → (列名, 类型)
     LIMIT = "「880円まで」"                                 # 上限 → 数或金額
-    FILE = "「「名義対応.csv」」"                           # 文件名 → 文字列
+    FILE = "「「〜.csv」」"                                 # 文件名 → 文字列
 
 
 @dataclass(frozen=True)

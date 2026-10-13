@@ -116,6 +116,7 @@ def _load_alias(path: str, base_dir) -> dict[str, str]:
 # ---------- 执行时：判定 ----------
 
 def reconcile(ctx, deposits: Table, invoices: Table):
+    """入金を請求に消し込む（先に「消込の名義」「消込の金額」の設定が必要）"""
     s = ctx.settings
     (dep_name, _), (inv_name, _) = s[(NS, "名義")]
     (dep_amount, dep_amount_type), (inv_amount, inv_amount_type) = s[(NS, "金額")]

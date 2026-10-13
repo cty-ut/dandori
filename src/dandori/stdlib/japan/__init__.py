@@ -102,9 +102,17 @@ def register(registry: Registry) -> None:
     registry.add_date_property(DateProperty("軽減税率", tax.reduced_rate, Type.NUMBER, uses="消費税率"))
 
     # 是休日就提前（推迟）到最近的营业日；是营业日就不变（经理部门的「前倒し」「後倒し」）
-    for word, function in (("前倒しする", calendar.backward), ("後倒しする", calendar.forward)):
+    def maedaoshi(ctx, day):
+        """支払日を前倒しする（休日なら前の営業日、営業日ならそのまま）"""
+        return calendar.backward(day)
+
+    def atodaoshi(ctx, day):
+        """支払日を後倒しする（休日なら次の営業日、営業日ならそのまま）"""
+        return calendar.forward(day)
+
+    for word, function in (("前倒しする", maedaoshi), ("後倒しする", atodaoshi)):
         registry.add_verb(VerbSpec(
             f"japan.{word}", word, Conjugation.SURU,
             params=(Param("を", "day", _DATE),),
-            returns=Type.DATE, impl=lambda ctx, day, f=function: f(day), uses="祝日",
+            returns=Type.DATE, impl=function, uses="祝日",
         ))

@@ -1,6 +1,7 @@
 """公开 API（架构设计 9.1）
 
 外部工具（CLI、编辑器、AI 助手……）只通过这里使用语言。
+Source（源码）和 Context（执行上下文）也从这里引用。
 """
 
 from __future__ import annotations
@@ -110,3 +111,81 @@ def run_with_log(source: Source, ctx: Context | None = None, registry: Registry 
         except OSError:
             log_path = None             # 日志写入失败只给出警告，不影响执行结果（由调用方提示）
     return RunResult(errors, log_path)
+
+
+# ---------- 给外部工具（编辑器、AI 助手等）用的信息（架构设计 9.1） ----------
+
+def diagnostics(errors: list[Diagnostic], source: Source) -> list[dict]:
+    """错误 → 机器可读的形式：错误码、行、列、信息"""
+    result = []
+    for error in errors:
+        line, column = source.line_col(error.span.start)
+        result.append({"code": error.code, "line": line, "column": column, "message": error.message,
+                       "text": source.slice(error.span)})
+    return result
+
+
+def catalog(registry: Registry | None = None) -> dict:
+    """语言提供的动词、设定、日付属性、规则数据。从注册表生成：语言增加了动词，这里自动就有"""
+    from dandori.frontend.conjugation import Form, conjugate
+    registry = registry or default_registry()
+    verbs = []
+    for spec in registry.verbs:
+        forms = conjugate(spec.dictionary_form, spec.conjugation)
+        verbs.append({
+            "word": spec.dictionary_form,
+            "te_form": forms[Form.TE],
+            "params": [{
+                "particle": p.particle,
+                "kind": p.kind.value,
+                "accepts": _accepts(p.accepts),
+                "required": p.required,
+            } for p in spec.params],
+            "effect": spec.effect.value,
+            "permission": spec.permission,
+            "doc": _example(spec.impl.__doc__),
+        })
+    settings = [{"namespace": ns, "key": key, "kind": s.kind.name, "example": s.kind.value}
+                for (ns, key), s in registry._settings.items()]
+    properties = [{"name": name, "result": registry.date_property(name).result.value}
+                  for name in registry.date_property_names]
+    return {"verbs": verbs, "settings": settings, "date_properties": properties,
+            "rule_data": dict(registry.rule_data)}
+
+
+def _example(doc: str | None) -> str:
+    """实现函数说明的第一行中的用例部分：去掉第一个「。」之后的内容，以及不含假名的括号注释（开发者的说明）"""
+    import re
+    if not doc:
+        return ""
+    line = doc.strip().splitlines()[0].split("。")[0]
+    return re.sub(r"（[^（）ぁ-んァ-ヶ]*）", "", line).strip()
+
+
+def _accepts(accepts) -> list[str] | None:
+    from dandori.types import TableType
+    if accepts is None:
+        return None
+    return sorted("表" if a is TableType else a.value for a in accepts)
+
+
+def describe_csv(file_name: str, base_dir: Path, sample_rows: int = 0) -> dict:
+    """CSV 的结构：列名、类型、行数。sample_rows > 0 时附上前几行（默认不附：不发送客户数据）"""
+    from dandori.connectors import ConnectorError
+    from dandori.connectors.csv import read_csv
+    from dandori.runtime.values import format_value
+    from dandori.stdlib.files import resolve
+    try:
+        table = read_csv(resolve(file_name, base_dir), file_name)
+    except (ConnectorError, VerbError) as e:
+        from dandori.errors import MESSAGES
+        return {"error": MESSAGES[e.code].format(**e.params)}
+    info = {
+        "file": file_name,
+        "columns": [{"name": shown, "type": t.value}
+                    for shown, (_, t) in zip(table.display_names, table.type.columns)],
+        "rows": len(table),
+    }
+    if sample_rows > 0:
+        info["sample"] = [[format_value(v) for v in row] for row in table.rows[:sample_rows]]
+    return info

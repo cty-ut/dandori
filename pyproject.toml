@@ -10,9 +10,12 @@ requires-python = ">=3.11"
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# AI 助手（独立的包 dandori_ai）：语言核心不需要这些
+ai = ["anthropic>=1.13", "openai>=3.29"]
 
 [project.scripts]
 dandori = "dandori.cli:main"
+dandori-ai = "dandori_ai.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -22,3 +25,4 @@ testpaths = ["tests"]
 
 [tool.setuptools.package-data]
 "dandori.stdlib.japan" = ["data/*.csv"]
+"dandori_ai" = ["reference/*.md", "reference/examples/*.dandori"]
