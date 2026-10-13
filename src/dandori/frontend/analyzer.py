@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
@@ -194,8 +194,9 @@ class _Analyzer:
                 self._error("E3057", statement.span)
             self.permissions = []
             for entry in statement.entries:
-                pure = PurePath(entry.path.replace("\\", "/"))
-                if pure.is_absolute() or ".." in pure.parts or ":" in entry.path:
+                from dandori.stdlib.files import outside_folder
+                pure = outside_folder(entry.path)
+                if pure is None:
                     self._error("E3038", entry.span, file=entry.path)
                     continue
                 self.permissions.append((entry.kind, pure.as_posix(), entry.folder))

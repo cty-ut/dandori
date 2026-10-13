@@ -178,3 +178,15 @@ def test_read_then_overwrite_same_file_is_allowed(data):
     _, errors, _ = run_in(data, "明細から金額が1000以上のものを絞り込んで、対象とする。「明細.csv」を対象で上書きする。")
     assert errors == []
     assert (data / "明細.csv").read_bytes().decode("utf-8-sig").count("\r\n") == 3   # 見出し + 2 行
+
+
+@pytest.mark.parametrize("name", ["/tmp/外.csv", "\\tmp\\外.csv", "C:外.csv", "C:\\外.csv", "..\\外.csv", "a/../../外.csv"])
+def test_outside_folder_on_every_os(name):
+    # Windows 上「/tmp/外.csv」不算绝对路径，但与文件夹连接后会跑到 C:\tmp：按 POSIX 的规则判断
+    from dandori.stdlib.files import outside_folder
+    assert outside_folder(name) is None
+
+
+def test_inside_folder():
+    from dandori.stdlib.files import outside_folder
+    assert outside_folder("出力\\a.csv").as_posix() == "出力/a.csv"

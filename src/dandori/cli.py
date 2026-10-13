@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
             _report_files(ctx)
         if log_dir is not None:
             if outcome.log_path is not None:
-                print(f"  実行記録：{outcome.log_path.relative_to(base_dir)}", file=sys.stderr)
+                print(f"  実行記録：{outcome.log_path.relative_to(base_dir).as_posix()}", file=sys.stderr)
             else:
                 print("  ※ 実行記録を書き出せませんでした", file=sys.stderr)
     elif args.command == "説明":

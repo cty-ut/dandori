@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path, PurePath
+from pathlib import Path, PurePosixPath
 
 from dandori.connectors import ConnectorError
 from dandori.connectors.csv import read_csv, write_csv
@@ -28,7 +28,7 @@ def check_permission(ctx, kind: str, file_name: str) -> None:
 
 
 def normalize_path(name: str) -> str:
-    return PurePath(name.replace("\\", "/")).as_posix()
+    return PurePosixPath(name.replace("\\", "/")).as_posix()
 
 
 def allows(permissions, kind: str, file_name: str) -> bool:
@@ -38,10 +38,22 @@ def allows(permissions, kind: str, file_name: str) -> bool:
                for k, p, folder in permissions)
 
 
+def outside_folder(file_name: str) -> PurePosixPath | None:
+    """程序所在的文件夹以外的路径 → None；以内 → 规范化的路径（语法设计 11.7）
+
+    不论在哪种操作系统上都按 POSIX 的规则判断：在 Windows 上，「/tmp/a.csv」不算绝对路径，
+    但与文件夹连接后会变成「C:\\tmp\\a.csv」，跑出程序的文件夹。
+    """
+    pure = PurePosixPath(file_name.replace("\\", "/"))
+    if pure.is_absolute() or ".." in pure.parts or ":" in file_name:
+        return None
+    return pure
+
+
 def resolve(file_name: str, base_dir: Path) -> Path:
     """文件名 → 路径。只允许程序所在的文件夹（及其子文件夹）以内（语法设计 11.7）"""
-    pure = PurePath(file_name.replace("\\", "/"))
-    if pure.is_absolute() or ".." in pure.parts or ":" in file_name:
+    pure = outside_folder(file_name)
+    if pure is None:
         raise VerbError("E3038", file=file_name)
     if pure.suffix.lower() != ".csv":
         raise VerbError("E3027", suffix=pure.suffix or file_name)
