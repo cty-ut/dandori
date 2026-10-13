@@ -224,7 +224,27 @@ class RangeLoop:
     span: Span
 
 
-Statement = Sentence | Assignment | If | CountLoop | RangeLoop
+@dataclass(frozen=True)
+class EachLoop:
+    """明細のそれぞれについて、…ここまで。循环中直接写列名表示当前这一行"""
+    table: Expr
+    body: tuple[Statement, ...]
+    span: Span
+
+
+@dataclass(frozen=True)
+class Break:
+    """繰り返しをやめる。"""
+    span: Span
+
+
+@dataclass(frozen=True)
+class Continue:
+    """次に進む。"""
+    span: Span
+
+
+Statement = Sentence | Assignment | If | CountLoop | RangeLoop | EachLoop | Break | Continue
 
 
 @dataclass(frozen=True)
@@ -294,6 +314,12 @@ def _describe(node) -> tuple[str, list]:
             return "回数繰り返し", [count, *body]
         case RangeLoop(var=var, start=start, end=end, body=body):
             return f"範囲繰り返し {var.name}", [start, end, *body]
+        case EachLoop(table=table, body=body):
+            return "それぞれについて", [table, *body]
+        case Break():
+            return "繰り返しをやめる", []
+        case Continue():
+            return "次に進む", []
         case Logical(op=op, items=items):
             return op, list(items)
         case Comparison(op=op, left=left, right=right):

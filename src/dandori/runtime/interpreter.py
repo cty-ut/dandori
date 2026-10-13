@@ -4,7 +4,8 @@
 做法很朴素：一句一句、一个手順一个手順地做，
 每一步先把参数的值算出来，再调用动词的实现函数。
 もし文就是先依次检查条件，执行第一个成立的分支。
-繰り返し文在开始时把次数或范围算好，之后不再改变，所以一定会结束。
+繰り返し文在开始时把次数、范围或要处理的行确定好，之后不再改变，所以一定会结束。
+「繰り返しをやめる」「次に進む」用异常实现：从循环体的深处直接跳回最内层的循环。
 """
 
 from __future__ import annotations
@@ -15,8 +16,8 @@ from typing import Callable
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
-from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundIf, BoundProgram,
-                                      BoundRangeLoop, BoundStatement)
+from dandori.frontend.analyzer import (BoundAssignment, BoundCountLoop, BoundEachLoop, BoundIf,
+                                      BoundProgram, BoundRangeLoop, BoundStatement)
 from dandori.plugin.registry import ParamKind, VerbError
 from dandori.runtime import values
 from dandori.table.interface import BLANK, Row, Table
@@ -40,6 +41,14 @@ class ExecutionError(Exception):
         self.diagnostic = diagnostic
 
 
+class _Break(Exception):
+    """繰り返しをやめる"""
+
+
+class _Continue(Exception):
+    """次に進む"""
+
+
 def execute(program: BoundProgram, ctx: Context) -> None:
     _Executor(ctx).block(program.sentences, last=None)
 
@@ -48,6 +57,7 @@ class _Executor:
     def __init__(self, ctx: Context):
         self.ctx = ctx
         self.env: dict[str, values.Value] = {}   # 变量：名字 → 值
+        self.rows: list[Row] = []                # 逐行处理中的当前行（最内层在最后）
 
     def block(self, statements: tuple[BoundStatement, ...], last):
         """执行一串文。last 是最近一个手順的结果：「それ」和自动填入都指向它"""
@@ -60,12 +70,29 @@ class _Executor:
             self.env[statement.name] = self.evaluate(statement.value, last)
             return None                          # 赋值不产生结果
 
+        if isinstance(statement, ast.Break):
+            raise _Break
+        if isinstance(statement, ast.Continue):
+            raise _Continue
+
         if isinstance(statement, BoundCountLoop):
             count = self.evaluate(statement.count, last)
             if not isinstance(count, int) or count < 0:
                 self._fail("E5002", statement.count.span, value=values.format_value(count))
             for _ in range(count):
-                self.block(statement.body, last=None)
+                if not self.loop_body(statement.body):
+                    break
+            return None
+
+        if isinstance(statement, BoundEachLoop):
+            table = self.evaluate(statement.table, last)
+            for row in list(table.records()):            # 开始时就确定了要处理的行
+                self.rows.append(row)
+                try:
+                    if not self.loop_body(statement.body):
+                        break
+                finally:
+                    self.rows.pop()
             return None
 
         if isinstance(statement, BoundRangeLoop):
@@ -76,13 +103,14 @@ class _Executor:
                     self._fail("E5003", expr.span, value=values.format_value(value))
             for i in range(first, final + 1):          # 两端都包含；开始 > 结束时执行 0 次
                 self.env[statement.var] = i
-                self.block(statement.body, last=None)
+                if not self.loop_body(statement.body):
+                    break
             self.env.pop(statement.var, None)          # 循环变量只在循环内有效
             return None
 
         if isinstance(statement, BoundIf):
             for branch in statement.branches:
-                if branch.condition is None or self.test(branch.condition, last):
+                if branch.condition is None or self.check(branch.condition, last):
                     self.block(branch.body, last=None)   # 「それ」不跨越块的边界
                     break
             return None
@@ -93,7 +121,10 @@ class _Executor:
             try:
                 last = step.spec.impl(self.ctx, **args)
             except VerbError as e:
-                raise ExecutionError(Diagnostic.make(e.code, step.span, **e.params)) from None
+                params = dict(e.params)
+                if e.code == "E5004" and params.get("where") == "並びの中" and self.rows:
+                    params["where"] = self.rows[-1].origin   # 逐行处理中：空欄多半来自当前行
+                raise ExecutionError(Diagnostic.make(e.code, step.span, **params)) from None
             if isinstance(step.result_type, TableType) and isinstance(last, Table) \
                     and last.type != step.result_type:
                 # 编译时读取的文件，执行时列定义变了（两次读取之间被修改）
@@ -103,6 +134,16 @@ class _Executor:
             self.env[statement.bind] = last
             return None
         return last
+
+    def loop_body(self, body) -> bool:
+        """执行一轮循环体。返回 False 表示「繰り返しをやめる」，循环应当结束"""
+        try:
+            self.block(body, last=None)                  # 「それ」不跨越块的边界
+        except _Continue:
+            pass
+        except _Break:
+            return False
+        return True
 
     @staticmethod
     def _fail(code: str, span, **params):
@@ -129,6 +170,13 @@ class _Executor:
 
     # ---------- 条件 ----------
 
+    def check(self, condition: ast.Condition, last) -> bool:
+        """もし文的条件：比较出错（如逐行处理中当前行是空欄）时，报告条件的位置"""
+        try:
+            return self.test(condition, last)
+        except VerbError as e:
+            raise ExecutionError(Diagnostic.make(e.code, condition.span, **e.params)) from None
+
     def test(self, condition: ast.Condition, last, row: Row | None = None) -> bool:
         """row 不为 None 时，条件中的列名取这一行的值（「〜のもの」）"""
         if isinstance(condition, ast.Logical):
@@ -141,7 +189,7 @@ class _Executor:
         if (a is BLANK or b is BLANK) and condition.op not in ("=", "<>"):
             side = condition.left if a is BLANK else condition.right
             column = side.name if isinstance(side, ast.Name) else "値"
-            raise VerbError("E5006", column=column, where=row.origin if row else "")
+            raise VerbError("E5006", column=column, where=self._origin(side, row))
         return _COMPARISONS[condition.op](a, b)
 
     # ---------- 值 ----------
@@ -155,22 +203,47 @@ class _Executor:
             case ast.Sore() | ast.PreviousResult():
                 return last
             case ast.Name(name=name):
-                if row is not None and name in row.values:
-                    return row.values[name]        # 条件中的列名：这一行的值
+                source = self._row_with(name, row)
+                if source is not None:
+                    return source.values[name]     # 条件、逐行处理中的列名：这一行的值
                 return self.env[name]
             case ast.ColumnRef(table=table, column=column):
                 return self.evaluate(table, last, row).column(column)
             case ast.ListExpr(items=items):
                 return [self.evaluate(item, last, row) for item in items]
             case ast.Negate(operand=operand):
-                return values.subtract(0, self.evaluate(operand, last, row))
+                a = self.evaluate(operand, last, row)
+                self._no_blank(a, operand, row)
+                return values.subtract(0, a)
             case ast.BinaryOp(op=op, left=left, right=right):
                 a, b = self.evaluate(left, last, row), self.evaluate(right, last, row)
+                self._no_blank(a, left, row)
+                self._no_blank(b, right, row)
                 try:
                     return _OPERATORS[op](a, b)
                 except VerbError as e:
                     raise ExecutionError(Diagnostic.make(e.code, expr.span, **e.params)) from None
         raise TypeError(f"未知のノード：{expr!r}")
+
+
+    # ---------- 当前行 ----------
+
+    def _row_with(self, name: str, row: Row | None) -> Row | None:
+        """名字是哪一行的列：先看条件正在检查的行，再从内到外看逐行处理的当前行"""
+        for candidate in ([row] if row is not None else []) + self.rows[::-1]:
+            if name in candidate.values:
+                return candidate
+        return None
+
+    def _origin(self, expr: ast.Expr, row: Row | None) -> str:
+        if isinstance(expr, ast.Name) and (source := self._row_with(expr.name, row)) is not None:
+            return source.origin
+        return ""
+
+    def _no_blank(self, value, expr: ast.Expr, row: Row | None) -> None:
+        """当前行的空欄参与计算：报错，指出是哪个文件的第几行"""
+        if value is BLANK:
+            raise ExecutionError(Diagnostic.make("E5004", expr.span, where=self._origin(expr, row)))
 
 
 _OPERATORS = {

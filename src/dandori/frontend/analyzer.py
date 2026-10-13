@@ -9,6 +9,7 @@
     6. もし文之后，变量是不是一定有值？   → 确定赋值（语法设计 6.6）
     7. 循环变量有没有被改动、被用到循环外？（语法设计 7.4）
     8. 表有没有这一列？（语法设计 8.4）——「読み込む」在这里就读取文件，确定列定义
+    9. 逐行处理中的列名指哪张表？有歧义吗？（语法设计 10.3、10.4）
 
 能在运行前发现的错误，都在这里发现。通过检查的程序，执行时只可能遇到
 "运行时才知道"的问题（比如除以 0）。
@@ -87,7 +88,15 @@ class BoundRangeLoop:
     span: Span
 
 
-BoundStatement = BoundSentence | BoundAssignment | BoundIf | BoundCountLoop | BoundRangeLoop
+@dataclass(frozen=True)
+class BoundEachLoop:
+    table: ast.Expr
+    body: tuple[BoundStatement, ...]
+    span: Span
+
+
+BoundStatement = (BoundSentence | BoundAssignment | BoundIf | BoundCountLoop | BoundRangeLoop
+                  | BoundEachLoop | ast.Break | ast.Continue)
 
 
 @dataclass(frozen=True)
@@ -118,8 +127,10 @@ class _Analyzer:
         self.defined: set[str] = set()
         self.loop_vars: set[str] = set()         # 正在执行的循环的变量：不能被赋值
         self.ended_loop_vars: set[str] = set()   # 用过的循环变量：在循环外使用时给出专门的提示
-        # 表格操作的条件中：名字被理解为这张表的列（语法设计 9.4）。(表的类型, 给人看的表名)
-        self.column_scope: tuple[TableType, str] | None = None
+        # 列的作用域栈：逐行处理的循环、「〜のもの」的条件都会压入一张表。
+        # 在这些地方，名字被理解为表的列（语法设计 9.4、10.3）。元素是 (表的类型, 给人看的表名)
+        self.scopes: list[tuple[TableType, str]] = []
+        self.loop_depth = 0                      # 「繰り返しをやめる」「次に進む」只能在循环中使用
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
         return BoundProgram(self._statements(program.sentences)), self.errors
@@ -136,6 +147,14 @@ class _Analyzer:
                     bound.append(self._count_loop(statement))
                 case ast.RangeLoop():
                     bound.append(self._range_loop(statement))
+                case ast.EachLoop():
+                    bound.append(self._each_loop(statement))
+                case ast.Break() | ast.Continue():
+                    if self.loop_depth == 0:
+                        word = "繰り返しをやめる" if isinstance(statement, ast.Break) else "次に進む"
+                        self._error("E3035", statement.span, word=word)
+                    self.last_type = None
+                    bound.append(statement)
                 case _:
                     bound.append(self._sentence(statement))
         return tuple(bound)
@@ -197,6 +216,19 @@ class _Analyzer:
             self.ended_loop_vars.add(name)
         return BoundRangeLoop(name, node.start, node.end, body, node.span)
 
+    def _each_loop(self, node: ast.EachLoop) -> BoundEachLoop:
+        """明細のそれぞれについて：循环中直接写列名，表示当前这一行（语法设计 10.3）"""
+        table = self._type_of(node.table)
+        if table is not None and not isinstance(table, TableType):
+            self._error("E3036", node.table.span, actual=self._describe_actual(node.table, table))
+            table = None
+        if table is not None:
+            self.scopes.append((table, self._table_label(node.table)))
+        body = self._loop_body(node.body)
+        if table is not None:
+            self.scopes.pop()
+        return BoundEachLoop(node.table, body, node.span)
+
     def _loop_body(self, statements, loop_var: str | None = None) -> tuple[BoundStatement, ...]:
         """循环可能执行 0 次：循环里新定义的变量，循环之后都不算"一定有值"
 
@@ -205,7 +237,9 @@ class _Analyzer:
         before = set(self.defined)
         self.defined = before | ({loop_var} if loop_var else set())
         self.last_type = None                        # 「それ」不跨越块的边界
+        self.loop_depth += 1
         body = self._statements(statements)
+        self.loop_depth -= 1
         self.defined = before
         self.last_type = None
         return body
@@ -258,9 +292,12 @@ class _Analyzer:
         return BoundAssignment(assignment.target.name, assignment.value, assignment.span)
 
     def _define(self, target: ast.NameRef, new: ValueType | None) -> None:
-        """登记名字。重新赋值可以，改变类型不行，循环变量不能改"""
+        """登记名字。重新赋值可以，改变类型不行，循环变量不能改，不能和当前行的列同名"""
         if target.name in self.loop_vars:
             self._error("E3017", target.span, name=target.name)
+            return
+        if self._scopes_with(target.name):
+            self._error("E3029", target.span, name=target.name)
             return
         self.defined.add(target.name)
         old = self.symbols.get(target.name)
@@ -390,9 +427,9 @@ class _Analyzer:
             if not isinstance(expr, ast.RowFilter):
                 self._wrong_kind(spec, param, expr)
             elif table is not None:
-                previous, self.column_scope = self.column_scope, (table, label)
+                self.scopes.append((table, label))
                 self._check_condition(expr.condition)
-                self.column_scope = previous
+                self.scopes.pop()
             return
 
         if param.kind is ParamKind.SORT:
@@ -419,6 +456,23 @@ class _Analyzer:
         if isinstance(expr, ast.Name) and name in self.symbols:
             self._error("E3029", expr.span, name=name)
         return column
+
+    def _scopes_with(self, name: str) -> list[tuple[TableType, str]]:
+        return [scope for scope in self.scopes if name in scope[0].names]
+
+    def _scoped_column(self, expr: ast.Name) -> ValueType | None:
+        matches = self._scopes_with(expr.name)
+        if len(matches) > 1:
+            tables = "と".join(f"「{label}」" for _, label in matches)
+            self._error("E3037", expr.span, name=expr.name, tables=tables)
+            return None
+        if matches:
+            table, label = matches[0]
+            return self._column_name(expr, table, label)
+        # 既不是列也不是变量：多半是列名写错了，按最内层的表给出建议
+        table, label = self.scopes[-1]
+        self._no_such_column(expr.name, expr.span, table, label)
+        return None
 
     def _no_such_column(self, column: str, span: Span, table: TableType, label: str) -> None:
         close = difflib.get_close_matches(column, table.names, n=1, cutoff=0.5)
@@ -452,11 +506,10 @@ class _Analyzer:
                 return _known(self.last_type)
             case ast.ColumnRef():
                 return self._column_type(expr)
-            case ast.Name(name=name) if self.column_scope is not None and (
-                    name in self.column_scope[0].names or name not in self.symbols):
-                # 条件中的「金額」：每一行的金额（标量）
-                table, label = self.column_scope
-                return self._column_name(expr, table, label)
+            case ast.Name(name=name) if self.scopes and (
+                    self._scopes_with(name) or name not in self.symbols):
+                # 逐行处理、「〜のもの」中的「金額」：当前这一行的金额（标量）
+                return self._scoped_column(expr)
             case ast.Name(name=name):
                 if name not in self.symbols:
                     self._error("E3010", expr.span, name=name)

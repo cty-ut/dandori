@@ -9,6 +9,8 @@
                 [ そうでなければ 、? { 文 } ] ここまで 。
     繰り返し文 ＝ 式 回繰り返して 、? { 文 } ここまで 。          → _loop()
                | 名前を 式から 式まで 繰り返して 、? { 文 } ここまで 。
+               | 式 のそれぞれについて 、? { 文 } ここまで 。      → _each()
+               | 繰り返しをやめる 。 | 次に進む 。
     条件     ＝ 比較 { かつ 比較 } | 比較 { または 比較 }        → _condition()
     比較     ＝ 式 比較記号 式 | 式 が 式 [以上|以下|…]          → _comparison()
     代入文    ＝ 名前 は 名詞句 とする 。                      → _assignment()
@@ -39,7 +41,8 @@ from dandori.frontend.tokens import Token, TokenKind as K
 _BLOCK_KEYWORDS = ("そうでなく", "そうでなければ", "ここまで")
 _LOOP_KEYWORDS = ("繰り返して", "回繰り返して")
 # 判断一句话是不是繰り返し文时，遇到这些就可以停止往后看
-_NOT_LOOP_KEYWORDS = ("もし", "ならば", "とする") + _BLOCK_KEYWORDS
+_NOT_LOOP_KEYWORDS = ("もし", "ならば", "とする", "のそれぞれについて") + _BLOCK_KEYWORDS
+_JUMP_KEYWORDS = ("繰り返しをやめる", "次に進む")
 _COMPARISON_KEYWORDS = {"以上": ">=", "以下": "<=", "未満": "<", "を超える": ">", "でない": "<>"}
 _MONO_KEYWORDS = ("のもの", "もの")
 _SORT_KEYWORDS = {"大きい順": True, "小さい順": False}   # 是否降序
@@ -59,6 +62,7 @@ class _Parser:
         self.source = source
         self.pos = 0
         self.errors: list[Diagnostic] = []
+        self.each_depth = 0     # 逐行处理的嵌套深度：其中もし条件主语位置的「」表示列名
 
     # ---------- 文的层次 ----------
 
@@ -88,6 +92,13 @@ class _Parser:
     def _statement(self) -> ast.Statement:
         if self._is_keyword("もし"):
             return self._if()
+        if self._current().kind is K.KEYWORD and self._current().text in _JUMP_KEYWORDS:
+            token = self._advance()
+            self._end_sentence()
+            node = ast.Break if token.text == "繰り返しをやめる" else ast.Continue
+            return node(token.span)
+        if self._starts_each():
+            return self._each()
         if self._starts_loop():
             return self._loop()
         if self._starts_assignment():
@@ -95,6 +106,36 @@ class _Parser:
         return self._sentence()
 
     # ---------- 繰り返し文 ----------
+
+    def _starts_each(self) -> bool:
+        """跳过构成值的词之后，紧接着是「のそれぞれについて」"""
+        i = self.pos
+        while (self.tokens[i].kind in (K.NAME, K.PRONOUN, K.STRING, K.LPAREN, K.RPAREN, K.UNKNOWN)
+               or (self.tokens[i].kind is K.PARTICLE and self.tokens[i].text == "の")):
+            i += 1
+        token = self.tokens[i]
+        return token.kind is K.KEYWORD and token.text == "のそれぞれについて"
+
+    def _each(self) -> ast.EachLoop:
+        """明細のそれぞれについて、…ここまで。"""
+        start = self._current().span.start
+        table = self._expr()
+        keyword = self._current()
+        if not self._is_keyword("のそれぞれについて"):
+            self._error("E2021", Span(start, keyword.span.end))
+            raise _SentenceError
+        self._advance()
+        if self._current().kind is K.COMMA:
+            self._advance()
+        self.each_depth += 1
+        body = tuple(self._statements(top_level=False))
+        self.each_depth -= 1
+        if self._is_keyword("ここまで"):
+            self._advance()
+            self._end_sentence()
+        else:
+            self._error("E2016", keyword.span, opener="それぞれについて")
+        return ast.EachLoop(table, body, Span(start, self._previous().span.end))
 
     def _starts_loop(self) -> bool:
         """从句首往后看：在遇到动词之前先遇到「繰り返して」，就是繰り返し文"""
@@ -145,7 +186,7 @@ class _Parser:
             self._advance()
             self._end_sentence()
         else:
-            self._error("E2016", keyword.span)
+            self._error("E2016", keyword.span, opener="繰り返して")
         span = Span(start, self._previous().span.end)
 
         if count is not None:
@@ -194,6 +235,9 @@ class _Parser:
         """条件 ならば。条件写错时跳到「ならば」，继续解析分支的内容，保住整个もし文的结构"""
         try:
             condition = self._condition()
+            if self.each_depth > 0:
+                # 逐行处理中：「支払い期日」が空欄ならば → 当前行的列（与「〜のもの」相同，语法设计 10.3）
+                condition = _columns_as_subjects(condition)
         except _SentenceError:
             while not (self._is_keyword("ならば") or self._current().kind in (K.PERIOD, K.EOF)
                        or self._at_block_keyword()):
