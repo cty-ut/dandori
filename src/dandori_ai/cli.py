@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None, provider_factory=None, ask=input) -> int
     change.add_argument("instruction", help="変えたい内容（日本語）")
     evaluate = commands.add_parser("評価", help="評価用のケースで AI を評価する")
     evaluate.add_argument("--ケース", dest="cases", default="evals")
+    evaluate.add_argument("--結果", dest="results", default="evals/結果", help="生成したプログラムなどを保存するフォルダ")
+    evaluate.add_argument("--だけ", dest="only", help="名前にこの文字を含むケースだけを評価する")
 
     for sub in (make, fix, change, evaluate):
         sub.add_argument("--提供元", dest="provider", default=os.environ.get("DANDORI_AI_PROVIDER", "claude"))
@@ -60,7 +62,7 @@ def main(argv: list[str] | None = None, provider_factory=None, ask=input) -> int
     try:
         provider = factory()
         if args.command == "評価":
-            return _evaluate(provider, Path(args.cases))
+            return _evaluate(provider, Path(args.cases), Path(args.results), args.only)
         return _generate(args, provider, ask)
     except ProviderError as e:
         print(f"エラー：{e}", file=sys.stderr)
@@ -162,16 +164,15 @@ def _report(outcome, base_dir: Path, path: Path) -> None:
     print(f"（AI とのやり取り：{outcome.turns}回、検査：{outcome.checks}回）")
 
 
-def _evaluate(provider, folder: Path) -> int:
-    cases = evals.load_cases(folder)
+def _evaluate(provider, folder: Path, results_dir: Path, only: str | None) -> int:
+    cases = [c for c in evals.load_cases(folder) if not only or only in c["name"]]
     if not cases:
         print(f"エラー：「{folder}」に評価のケースがありません", file=sys.stderr)
         return 1
-    results = []
-    for case in cases:
-        print(f"評価中：{case['name']}…", file=sys.stderr)
-        results.append(evals.run_case(case, provider))
+    results, saved = evals.run_all(cases, provider, results_dir,
+                                   progress=lambda name: print(f"評価中：{name}…", file=sys.stderr))
     print(evals.report(results))
+    print(f"\n生成したプログラムと結果：{saved}")
     return 0
 
 

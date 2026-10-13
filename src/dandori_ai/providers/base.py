@@ -29,3 +29,4 @@ class AssistantTurn:
     tool_calls: list[ToolCall] = field(default_factory=list)
     raw: object = None
     usage: dict = field(default_factory=dict)
+    model: str = ""            # API 响应中实际使用的模型（别名背后的真实模型，评测时记录）

@@ -19,7 +19,8 @@ def make_provider(name: str, model: str | None = None):
         return OpenAICompatibleProvider(model=model, api_key_env="OPENAI_API_KEY", name="openai")
     if name == "deepseek":
         from dandori_ai.providers.openai_compat import OpenAICompatibleProvider
-        return OpenAICompatibleProvider(model=model or "deepseek-chat", base_url="https://api.deepseek.com",
+        # 「deepseek-chat」是会变化的别名（2026-10 时对应 deepseek-flash），所以明确写出模型名
+        return OpenAICompatibleProvider(model=model or "deepseek-flash", base_url="https://api.deepseek.com",
                                         api_key_env="DEEPSEEK_API_KEY", name="deepseek")
     from dandori_ai.providers.base import ProviderError
     raise ProviderError(f"「{name}」という提供元はありません（claude、openai、deepseek）")

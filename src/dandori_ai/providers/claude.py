@@ -55,7 +55,7 @@ class ClaudeProvider:
         text = "".join(b.text for b in response.content if b.type == "text")
         calls = [ToolCall(b.id, b.name, dict(b.input)) for b in response.content if b.type == "tool_use"]
         usage = getattr(response, "usage", None)
-        return AssistantTurn(text, calls, raw=response.content, usage={
+        return AssistantTurn(text, calls, raw=response.content, model=getattr(response, "model", self.model), usage={
             "input_tokens": getattr(usage, "input_tokens", 0),
             "output_tokens": getattr(usage, "output_tokens", 0),
             "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,

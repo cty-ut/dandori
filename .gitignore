@@ -2,3 +2,5 @@
 __pycache__/
 *.egg-info/
 .pytest_cache/
+# 评测的结果（生成的程序等）：需要时单独保存
+evals/結果/

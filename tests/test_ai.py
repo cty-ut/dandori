@@ -319,19 +319,73 @@ def test_cli_provider_error(folder, capsys):
 
 @pytest.mark.parametrize("case", evals.load_cases(ROOT / "evals"), ids=lambda c: c["name"])
 def test_eval_cases_are_correct(case, tmp_path):
-    """评测用例本身要正确：标准答案程序在用例的数据上必须得到期望的输出"""
+    """评测用例本身要正确：标准答案程序必须通过用例的所有检查"""
     evals.prepare(case, tmp_path)
-    correct, note = evals.check_output(case, case["reference_program"], tmp_path)
-    assert correct, note
+    checks, minimal = evals.evaluate_program(case, case["reference_program"], tmp_path)
+    assert all(ok for _, ok, _ in checks), checks
+    assert minimal is True                                      # 标准答案的权限是最小的
+    if case["expect"].get("must_ask"):
+        assert case["reference_questions"]
 
 
-def test_eval_runner_with_fake_provider():
-    case = evals.load_cases(ROOT / "evals")[0]
+def test_eval_categories():
+    categories = {c["category"] for c in evals.load_cases(ROOT / "evals")}
+    assert {"基本", "落とし穴", "例にない機能", "最小権限", "質問すべき"} <= categories
+
+
+def by_name(name):
+    return next(c for c in evals.load_cases(ROOT / "evals") if c["name"] == name)
+
+
+def test_eval_runner_with_fake_provider(tmp_path):
+    case = by_name("取引先別集計")
     good = evals.run_case(case, FakeProvider([submit(case["reference_program"])]))
-    assert good.generated and good.correct and good.checks == 1
+    assert good.generated and good.correct and good.compiles == 1 and good.minimal_permissions
     # 能通过编译、但结果不对（合计 → 平均）：评测要测出来的正是这种情况
     wrong = evals.run_case(case, FakeProvider([submit(case["reference_program"].replace("合計して", "平均して"))]))
     assert wrong.generated and not wrong.correct
     failed = evals.run_case(case, FakeProvider([AssistantTurn("")] * 3))
     assert not failed.generated
-    assert "生成できた：2/3" in evals.report([good, wrong, failed])
+    text = evals.report([good, wrong, failed])
+    assert "生成できた：2/3" in text and "正解：1/3" in text
+
+
+def test_must_ask_and_forbid(tmp_path):
+    case = by_name("入金消込の手数料")
+    silent = evals.run_case(case, FakeProvider([submit(case["reference_program"])]))
+    assert not silent.correct and "確認事項" in silent.note            # 没有提出确认事项
+    asked = evals.run_case(case, FakeProvider([submit(case["reference_program"], questions=["手数料は？"])]))
+    assert asked.correct
+    invented = case["reference_program"].replace("入金を請求に", "消込の手数料は、880円までとする。\n入金を請求に")
+    guessed = evals.run_case(case, FakeProvider([submit(invented, questions=["?"])]))
+    assert not guessed.correct and "消込の手数料" in guessed.note      # 自己编了手续费
+
+
+def test_read_only_and_minimal_permissions():
+    case = by_name("表示だけ")
+    extra = case["reference_program"].replace("ここまで。", "  書き出し：「出力」フォルダ\nここまで。")
+    result = evals.run_case(case, FakeProvider([submit(extra)]))
+    assert not result.correct and result.minimal_permissions is False
+
+
+def test_numeric_output():
+    case = by_name("消費税の端数")
+    program = case["reference_program"].replace("合計×10%を切り捨てて", "合計×1円×10%を切り捨てて")
+    assert evals.run_case(case, FakeProvider([submit(program)])).correct   # 「1,334円」でも正解
+
+
+def test_results_are_saved(tmp_path):
+    case = by_name("取引先別集計")
+    provider = FakeProvider([submit(case["reference_program"])])
+    provider.model = "fake-1"
+    results, saved = evals.run_all([case], provider, tmp_path)
+    assert (saved / "取引先別集計.dandori").read_text(encoding="utf-8") == case["reference_program"]
+    assert json.loads((saved / "results.json").read_text(encoding="utf-8"))[0]["correct"] is True
+    assert "正解：1/1" in (saved / "report.txt").read_text(encoding="utf-8")
+
+
+def test_model_is_recorded(folder):
+    provider = FakeProvider([AssistantTurn("", [call("submit_program", 1, program=GOOD, summary="",
+                                                     open_questions=[])], model="deepseek-flash")])
+    outcome = run_session(provider, Toolbox(folder), "x", system="S")
+    assert outcome.models == ["deepseek-flash"]

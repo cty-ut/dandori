@@ -28,6 +28,7 @@ class Outcome:
     turns: int
     checks: int
     usage: dict = field(default_factory=dict)
+    models: list[str] = field(default_factory=list)     # 实际使用的模型（去重，按出现顺序）
 
 
 REMINDER = "プログラムができたら submit_program で提出してください。"
@@ -38,6 +39,7 @@ def run_session(provider, toolbox: Toolbox, request: str, max_turns: int = 12, s
     system = system or system_prompt()
     messages: list[dict] = [{"role": "user", "text": request}]
     usage: dict[str, int] = {}
+    models: list[str] = []
     reminders = 0
     last_errors = []
 
@@ -45,6 +47,8 @@ def run_session(provider, toolbox: Toolbox, request: str, max_turns: int = 12, s
         reply = provider.complete(system, messages, TOOLS)
         for key, value in reply.usage.items():
             usage[key] = usage.get(key, 0) + (value or 0)
+        if reply.model and reply.model not in models:
+            models.append(reply.model)
         messages.append({"role": "assistant", "text": reply.text, "tool_calls": reply.tool_calls, "raw": reply.raw})
 
         if not reply.tool_calls:
@@ -64,7 +68,7 @@ def run_session(provider, toolbox: Toolbox, request: str, max_turns: int = 12, s
                 last_errors = toolbox.history[-1] if toolbox.history else []
         if submitted:
             return Outcome(submitted["program"], submitted["summary"], submitted["open_questions"],
-                           turn, toolbox.checks, usage)
+                           turn, toolbox.checks, usage, models)
         messages.append({"role": "tool_results", "results": results})
 
     raise GenerationFailed(f"{max_turns}回のやり取りで、検査に通るプログラムを作れませんでした", last_errors)

@@ -53,7 +53,7 @@ class OpenAICompatibleProvider:
                 arguments = {"__invalid__": call.function.arguments}
             calls.append(ToolCall(call.id, call.function.name, arguments))
         usage = getattr(response, "usage", None)
-        return AssistantTurn(message.content or "", calls, raw=None, usage={
+        return AssistantTurn(message.content or "", calls, raw=None, model=getattr(response, "model", self.model), usage={
             "input_tokens": getattr(usage, "prompt_tokens", 0),
             "output_tokens": getattr(usage, "completion_tokens", 0),
         })
