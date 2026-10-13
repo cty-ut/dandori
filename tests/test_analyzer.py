@@ -132,3 +132,65 @@ def test_variable_errors(code, expected):
 
 def test_misspelled_name_in_assignment_does_not_cascade():
     assert error_codes("答えは1とする。答えを表示する。") == ["E1004", "E1004"]
+
+
+# ---------- 阶段 2-2：条件 ----------
+
+@pytest.mark.parametrize("code", [
+    # 所有分支都定义了
+    "合計は1とする。もし合計が1ならば、区分は「a」とする。そうでなければ、区分は「b」とする。ここまで。区分を表示する。",
+    # else-if 也算
+    "合計は1とする。もし合計が1ならば、区分は「a」とする。そうでなく合計が2ならば、区分は「b」とする。"
+    "そうでなければ、区分は「c」とする。ここまで。区分を表示する。",
+    # もし之前已经定义过
+    "区分は「x」とする。合計は1とする。もし合計が1ならば、区分は「a」とする。ここまで。区分を表示する。",
+    # 只在分支内使用
+    "合計は1とする。もし合計が1ならば、区分は「a」とする。区分を表示する。ここまで。",
+    # 嵌套：内层两个分支都定义了，外层的这个分支也就定义了
+    "合計は1とする。もし合計が1ならば、もし合計が2ならば、区分は「a」とする。そうでなければ、区分は「b」とする。"
+    "ここまで。そうでなければ、区分は「c」とする。ここまで。区分を表示する。",
+])
+def test_definite_assignment_ok(code):
+    compile_ok(code)
+
+
+@pytest.mark.parametrize("code", [
+    # 没有「そうでなければ」
+    "合計は1とする。もし合計が1ならば、区分は「a」とする。ここまで。区分を表示する。",
+    # 有一个分支没定义
+    "合計は1とする。もし合計が1ならば、区分は「a」とする。そうでなく合計が2ならば、1を表示する。"
+    "そうでなければ、区分は「c」とする。ここまで。区分を表示する。",
+    # 嵌套：内层没有「そうでなければ」
+    "合計は1とする。もし合計が1ならば、もし合計が2ならば、区分は「a」とする。ここまで。"
+    "そうでなければ、区分は「c」とする。ここまで。区分を表示する。",
+])
+def test_definite_assignment_errors(code):
+    assert error_codes(code) == ["E3014"]
+
+
+def test_type_must_match_across_branches():
+    code = "合計は1とする。もし合計が1ならば、区分は「a」とする。そうでなければ、区分は2とする。ここまで。"
+    assert error_codes(code) == ["E3009"]
+
+
+def test_sore_in_condition_refers_to_outer():
+    compile_ok("100と200を足す。もしそれが300ならば、1を表示する。ここまで。")
+
+
+@pytest.mark.parametrize("code", [
+    "100と200を足す。もし1が1ならば、それを表示する。ここまで。",     # 块内第一句
+    "合計は1とする。もし合計が1ならば、2を足す。ここまで。それを表示する。",  # ここまで之后
+])
+def test_sore_does_not_cross_blocks(code):
+    assert error_codes(code) == ["E3006"]
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("文字は「a」とする。もし文字が1以上ならば、ここまで。", ["E3012"]),
+    ("文字は「a」とする。もし文字>1ならば、ここまで。", ["E3012"]),
+    ("文字は「a」とする。もし文字が1ならば、ここまで。", ["E3013"]),
+    ("一覧は1と2とする。もし一覧が1ならば、ここまで。", ["E3013"]),
+    ("もし未定が1ならば、ここまで。", ["E3010"]),
+])
+def test_comparison_type_errors(code, expected):
+    assert error_codes(code) == expected

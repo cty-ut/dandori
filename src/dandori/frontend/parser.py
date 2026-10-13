@@ -2,7 +2,13 @@
 
 用的方法叫"递归下降"：语法里的每一条规则写成一个函数，函数之间互相调用。
 
-    プログラム ＝ { 代入文 | 手順文 }                         → program()
+    プログラム ＝ { 文 }                                    → program()
+    文       ＝ もし文 | 代入文 | 手順文                       → _statement()
+    もし文    ＝ もし 条件 ならば 、? { 文 }                    → _if()
+                { そうでなく 条件 ならば 、? { 文 } }
+                [ そうでなければ 、? { 文 } ] ここまで 。
+    条件     ＝ 比較 { かつ 比較 } | 比較 { または 比較 }        → _condition()
+    比較     ＝ 式 比較記号 式 | 式 が 式 [以上|以下|…]          → _comparison()
     代入文    ＝ 名前 は 名詞句 とする 。                      → _assignment()
     手順文    ＝ 手順 { 、? 手順 } [ 、? 名前 とする ] 。       → _sentence()
     手順     ＝ { 引数句 } 動詞                              → _step()
@@ -14,6 +20,7 @@
 
 出错时的策略：一句话里出了错，就跳到下一个「。」，从下一句继续解析。
 这样一次就能报出整个程序里的所有错误。
+跳过时遇到「そうでなく」「ここまで」等块的关键字就停下，保证もし文的结构不被破坏。
 """
 
 from __future__ import annotations
@@ -23,6 +30,9 @@ from dandori.frontend import ast
 from dandori.frontend.conjugation import Form
 from dandori.frontend.source import Source, Span
 from dandori.frontend.tokens import Token, TokenKind as K
+
+_BLOCK_KEYWORDS = ("そうでなく", "そうでなければ", "ここまで")
+_COMPARISON_KEYWORDS = {"以上": ">=", "以下": "<=", "未満": "<", "を超える": ">", "でない": "<>"}
 
 
 def parse(tokens: list[Token], source: Source) -> tuple[ast.Program, list[Diagnostic]]:
@@ -43,17 +53,138 @@ class _Parser:
     # ---------- 文的层次 ----------
 
     def program(self) -> tuple[ast.Program, list[Diagnostic]]:
-        sentences = []
+        statements = self._statements(top_level=True)
+        end = self._current().span.end
+        return ast.Program(tuple(statements), Span(0, end)), self.errors
+
+    def _statements(self, top_level: bool) -> list[ast.Statement]:
+        """一串文。在块内遇到「そうでなく」「そうでなければ」「ここまで」就停下，交给 _if() 处理"""
+        statements = []
         while self._current().kind is not K.EOF:
+            if self._at_block_keyword():
+                if not top_level:
+                    break
+                token = self._advance()
+                self._error("E2013", token.span, word=token.text)
+                self._skip_to_next_sentence()
+                continue
             try:
-                if self._starts_assignment():
-                    sentences.append(self._assignment())
-                else:
-                    sentences.append(self._sentence())
+                statements.append(self._statement())
             except _SentenceError:
                 self._skip_to_next_sentence()
-        end = self._current().span.end
-        return ast.Program(tuple(sentences), Span(0, end)), self.errors
+        return statements
+
+    def _statement(self) -> ast.Statement:
+        if self._is_keyword("もし"):
+            return self._if()
+        if self._starts_assignment():
+            return self._assignment()
+        return self._sentence()
+
+    # ---------- もし文 ----------
+
+    def _if(self) -> ast.If:
+        """もし 条件 ならば、{文} { そうでなく 条件 ならば、{文} } [ そうでなければ、{文} ] ここまで。"""
+        moshi = self._advance()
+        branches = [self._branch(moshi, with_condition=True)]
+        while self._is_keyword("そうでなく"):
+            branches.append(self._branch(self._advance(), with_condition=True))
+        if self._is_keyword("そうでなければ"):
+            branches.append(self._branch(self._advance(), with_condition=False))
+
+        if self._is_keyword("ここまで"):
+            self._advance()
+            self._end_sentence()
+        else:
+            self._error("E2012", moshi.span)
+        return ast.If(tuple(branches), Span(moshi.span.start, self._previous().span.end))
+
+    def _branch(self, keyword: Token, with_condition: bool) -> ast.Branch:
+        condition = self._branch_condition() if with_condition else None
+        if self._current().kind is K.COMMA:
+            self._advance()
+        body = self._statements(top_level=False)
+        return ast.Branch(condition, tuple(body), Span(keyword.span.start, self._previous().span.end))
+
+    def _branch_condition(self) -> ast.Condition:
+        """条件 ならば。条件写错时跳到「ならば」，继续解析分支的内容，保住整个もし文的结构"""
+        try:
+            condition = self._condition()
+        except _SentenceError:
+            while not (self._is_keyword("ならば") or self._current().kind in (K.PERIOD, K.EOF)
+                       or self._at_block_keyword()):
+                self._advance()
+            # 用一个"不明"的比较占位，后续阶段不会再为它报错
+            span = self._current().span
+            condition = ast.Comparison("=", ast.ErrorExpr(span), ast.ErrorExpr(span), span)
+
+        if self._is_keyword("ならば"):
+            self._advance()
+        elif self._current().kind is K.UNKNOWN:
+            self._advance()        # 「なら」等，断词时已经报过 E1009
+        elif self._naraba_ahead():
+            # 条件后面还有看不懂的内容，但再往后能找到「ならば」：报一次错，跳到「ならば」
+            self._error("E2015", self._current().span)
+            while not self._is_keyword("ならば"):
+                self._advance()
+            self._advance()
+        else:
+            self._error("E2011", self._point_after(self._previous().span))
+        return condition
+
+    def _naraba_ahead(self) -> bool:
+        """在这句话结束之前，后面还有没有「ならば」"""
+        for token in self.tokens[self.pos:]:
+            if token.kind is K.KEYWORD and token.text == "ならば":
+                return True
+            if token.kind in (K.PERIOD, K.EOF) or (token.kind is K.KEYWORD and token.text in _BLOCK_KEYWORDS):
+                return False
+        return False
+
+    def _condition(self) -> ast.Condition:
+        """条件 ＝ 比較 { かつ 比較 } | 比較 { または 比較 }，不能混用（语法设计 6.3）"""
+        items = [self._comparison()]
+        op = None
+        while self._is_keyword("かつ") or self._is_keyword("または"):
+            token = self._advance()
+            if op is None:
+                op = token.text
+            elif token.text != op:
+                self._error("E2014", token.span)
+            items.append(self._comparison())
+
+        if len(items) == 1:
+            return items[0]
+        return ast.Logical(op, tuple(items), Span(items[0].span.start, items[-1].span.end))
+
+    def _comparison(self) -> ast.Comparison:
+        """比較 ＝ 式 比較記号 式 | 式 が 式 [以上|以下|未満|を超える|でない]"""
+        if not self._starts_value(self._current()):
+            self._error("E2015", self._current().span)
+            raise _SentenceError
+        left = self._expr()
+        token = self._current()
+
+        if token.kind is K.COMPARE:                     # 合計>=100
+            self._advance()
+            right = self._expr()
+            return ast.Comparison(token.value, left, right, Span(left.span.start, right.span.end))
+
+        if token.kind is K.PARTICLE and token.text == "が":   # 合計が100以上
+            self._advance()
+            if not self._starts_value(self._current()):
+                self._error("E2015", self._current().span)
+                raise _SentenceError
+            right = self._expr()
+            word = self._current()
+            op = "="                                    # 合計が0ならば：没有比较词就是"等于"
+            if word.kind is K.KEYWORD and word.text in _COMPARISON_KEYWORDS:
+                op = _COMPARISON_KEYWORDS[word.text]
+                self._advance()
+            return ast.Comparison(op, left, right, Span(left.span.start, self._previous().span.end))
+
+        self._error("E2015", left.span)
+        raise _SentenceError
 
     def _starts_assignment(self) -> bool:
         """以「名前 は」开头的是代入文
@@ -303,7 +434,13 @@ class _Parser:
         else:
             self._error("E2008", token.span, word=token.text)
 
+    def _at_block_keyword(self) -> bool:
+        token = self._current()
+        return token.kind is K.KEYWORD and token.text in _BLOCK_KEYWORDS
+
     def _skip_to_next_sentence(self) -> None:
-        while self._current().kind not in (K.PERIOD, K.EOF):
+        """跳到下一个「。」之后。遇到块的关键字就停下，不吞掉它"""
+        while self._current().kind not in (K.PERIOD, K.EOF) and not self._at_block_keyword():
             self._advance()
-        self._advance()
+        if self._current().kind is K.PERIOD:
+            self._advance()

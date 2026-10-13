@@ -1,8 +1,9 @@
 """解释器：执行对好号的程序
 
-阶段 1 直接遍历语法树执行（架构设计 10.3），阶段 3 起改为执行计划。
+阶段 1、2 直接遍历语法树执行（架构设计 10.3），阶段 3 起改为执行计划。
 做法很朴素：一句一句、一个手順一个手順地做，
 每一步先把参数的值算出来，再调用动词的实现函数。
+もし文就是先依次检查条件，执行第一个成立的分支。
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from typing import Callable
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
-from dandori.frontend.analyzer import BoundAssignment, BoundProgram
+from dandori.frontend.analyzer import BoundAssignment, BoundIf, BoundProgram, BoundStatement
 from dandori.plugin.registry import VerbError
 from dandori.runtime import values
 
@@ -34,45 +35,74 @@ class ExecutionError(Exception):
 
 
 def execute(program: BoundProgram, ctx: Context) -> None:
-    env: dict[str, values.Value] = {}   # 变量：名字 → 值
-    last = None                          # 最近一个手順的结果：「それ」和自动填入都指向它
+    _Executor(ctx).block(program.sentences, last=None)
 
-    for sentence in program.sentences:
-        if isinstance(sentence, BoundAssignment):
-            env[sentence.name] = _evaluate(sentence.value, last, env)
-            last = None                  # 赋值不产生结果
-            continue
 
-        for step in sentence.steps:
-            args = {name: _evaluate(expr, last, env) for name, expr in step.args.items()}
+class _Executor:
+    def __init__(self, ctx: Context):
+        self.ctx = ctx
+        self.env: dict[str, values.Value] = {}   # 变量：名字 → 值
+
+    def block(self, statements: tuple[BoundStatement, ...], last):
+        """执行一串文。last 是最近一个手順的结果：「それ」和自动填入都指向它"""
+        for statement in statements:
+            last = self.statement(statement, last)
+        return last
+
+    def statement(self, statement: BoundStatement, last):
+        if isinstance(statement, BoundAssignment):
+            self.env[statement.name] = self.evaluate(statement.value, last)
+            return None                          # 赋值不产生结果
+
+        if isinstance(statement, BoundIf):
+            for branch in statement.branches:
+                if branch.condition is None or self.test(branch.condition, last):
+                    self.block(branch.body, last=None)   # 「それ」不跨越块的边界
+                    break
+            return None
+
+        for step in statement.steps:
+            args = {name: self.evaluate(expr, last) for name, expr in step.args.items()}
             try:
-                last = step.spec.impl(ctx, **args)
+                last = step.spec.impl(self.ctx, **args)
             except VerbError as e:
                 raise ExecutionError(Diagnostic.make(e.code, step.span, **e.params)) from None
-        if sentence.bind is not None:
-            env[sentence.bind] = last
-            last = None
+        if statement.bind is not None:
+            self.env[statement.bind] = last
+            return None
+        return last
 
+    # ---------- 条件 ----------
 
-def _evaluate(expr: ast.Expr, last, env: dict):
-    match expr:
-        case ast.Number(value=value) | ast.String(value=value):
-            return value
-        case ast.Sore() | ast.PreviousResult():
-            return last
-        case ast.Name(name=name):
-            return env[name]
-        case ast.ListExpr(items=items):
-            return [_evaluate(item, last, env) for item in items]
-        case ast.Negate(operand=operand):
-            return values.subtract(0, _evaluate(operand, last, env))
-        case ast.BinaryOp(op=op, left=left, right=right):
-            a, b = _evaluate(left, last, env), _evaluate(right, last, env)
-            try:
-                return _OPERATORS[op](a, b)
-            except VerbError as e:
-                raise ExecutionError(Diagnostic.make(e.code, expr.span, **e.params)) from None
-    raise TypeError(f"未知のノード：{expr!r}")
+    def test(self, condition: ast.Condition, last) -> bool:
+        if isinstance(condition, ast.Logical):
+            results = (self.test(item, last) for item in condition.items)
+            return all(results) if condition.op == "かつ" else any(results)
+        a = self.evaluate(condition.left, last)
+        b = self.evaluate(condition.right, last)
+        return _COMPARISONS[condition.op](a, b)
+
+    # ---------- 值 ----------
+
+    def evaluate(self, expr: ast.Expr, last):
+        match expr:
+            case ast.Number(value=value) | ast.String(value=value):
+                return value
+            case ast.Sore() | ast.PreviousResult():
+                return last
+            case ast.Name(name=name):
+                return self.env[name]
+            case ast.ListExpr(items=items):
+                return [self.evaluate(item, last) for item in items]
+            case ast.Negate(operand=operand):
+                return values.subtract(0, self.evaluate(operand, last))
+            case ast.BinaryOp(op=op, left=left, right=right):
+                a, b = self.evaluate(left, last), self.evaluate(right, last)
+                try:
+                    return _OPERATORS[op](a, b)
+                except VerbError as e:
+                    raise ExecutionError(Diagnostic.make(e.code, expr.span, **e.params)) from None
+        raise TypeError(f"未知のノード：{expr!r}")
 
 
 _OPERATORS = {
@@ -80,4 +110,13 @@ _OPERATORS = {
     "-": values.subtract,
     "*": values.multiply,
     "/": values.divide,
+}
+
+_COMPARISONS = {
+    ">=": lambda a, b: a >= b,
+    "<=": lambda a, b: a <= b,
+    "<": lambda a, b: a < b,
+    ">": lambda a, b: a > b,
+    "=": lambda a, b: a == b,
+    "<>": lambda a, b: a != b,
 }

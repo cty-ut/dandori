@@ -19,6 +19,7 @@ class TokenKind(Enum):
     NAME = "名前"
     KEYWORD = "キーワード"
     OPERATOR = "演算子"
+    COMPARE = "比較記号"
     LPAREN = "左括弧"
     RPAREN = "右括弧"
     COMMA = "読点"

@@ -228,3 +228,35 @@ def test_declaration_errors(lexicon, code, expected):
 def test_late_declaration_is_not_registered(lexicon):
     _, errors = lex("100を表示する。用語：答え。答えを表示する。", lexicon)
     assert [e.code for e in errors] == ["E1007", "E1004"]
+
+
+# ---------- 阶段 2-2：条件 ----------
+
+@pytest.mark.parametrize("code, op", [
+    (">=", ">="), ("≧", ">="), ("＞＝", ">="),
+    ("<=", "<="), ("≦", "<="), ("＜＝", "<="),
+    ("<", "<"), ("＜", "<"), (">", ">"), ("＞", ">"),
+    ("=", "="), ("＝", "="),
+    ("<>", "<>"), ("!=", "<>"), ("≠", "<>"), ("！＝", "<>"),
+])
+def test_compare_symbols(lexicon, code, op):
+    tokens, errors = lex(f"1{code}2", lexicon)
+    assert errors == []
+    assert (tokens[1].kind, tokens[1].value) == (K.COMPARE, op)
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("上限以上", [(K.NAME, "上限"), (K.KEYWORD, "以上")]),                 # 词典优先
+    ("「大口」でない", [(K.STRING, "「大口」"), (K.KEYWORD, "でない")]),     # 不是助词「で」
+    ("45を超える", [(K.NUMBER, "45"), (K.KEYWORD, "を超える")]),           # 不是助词「を」
+    ("そうでなければ", [(K.KEYWORD, "そうでなければ")]),                   # 不是「そうでなく」+…
+])
+def test_condition_keywords(lexicon, code, expected):
+    tokens, errors = lex(code, lexicon)
+    assert errors == []
+    assert kinds_and_texts(tokens) == expected
+
+
+def test_nara_hint(lexicon):
+    _, errors = lex("もし合計が0なら、ここまで。", lexicon)
+    assert [e.code for e in errors] == ["E1009"]

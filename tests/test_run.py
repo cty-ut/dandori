@@ -127,3 +127,48 @@ def test_declared_terms_as_variables():
     """)
     assert errors == []
     assert output == ["山田商事", "500"]
+
+
+# ---------- 阶段 2-2：条件 ----------
+
+@pytest.mark.parametrize("total, expected", [
+    (2000000, "大口"), (1000000, "大口"),      # 以上：含本数
+    (999999, "中口"), (100000, "中口"),
+    (99999, "小口"), (0, "小口"),
+])
+def test_if_chain_first_match_wins(total, expected):
+    output, errors = run_code(f"""
+        合計は{total}とする。
+        もし合計が1000000以上ならば、
+          区分は「大口」とする。
+        そうでなく合計が100000以上ならば、
+          区分は「中口」とする。
+        そうでなければ、
+          区分は「小口」とする。
+        ここまで。
+        区分を表示する。
+    """)
+    assert errors == []
+    assert output == [expected]
+
+
+@pytest.mark.parametrize("cond, expected", [
+    ("45が45を超える", False), ("46が45を超える", True),     # 超える：不含本数
+    ("20が20未満", False), ("19が20未満", True),
+    ("10が10以下", True),
+    ("0.1+0.2が0.3", True),                                # Decimal：没有浮点误差
+    ("「a」が「a」", True), ("「a」が「b」でない", True),
+    ("1≠2", True), ("1<>1", False),
+    ("1が1かつ2が3", False), ("1が1または2が3", True),
+])
+def test_conditions(cond, expected):
+    output, errors = run_code(f"もし{cond}ならば、「はい」を表示する。そうでなければ、「いいえ」を表示する。ここまで。")
+    assert errors == []
+    assert output == ["はい" if expected else "いいえ"]
+
+
+def test_conditions_example_file():
+    code = (EXAMPLES / "条件.dandori").read_text(encoding="utf-8")
+    output, errors = run_code(code)
+    assert errors == []
+    assert output == ["中口", "少数の大きな取引", "通常の承認", "36協定の上限を超えています"]

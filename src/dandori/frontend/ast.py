@@ -129,13 +129,56 @@ class Assignment:
     span: Span
 
 
+# ---------- 条件（语法设计第 6 节） ----------
+
+@dataclass(frozen=True)
+class Comparison:
+    """比较：合計が100以上、合計>=100"""
+    op: str          # 标准写法：>= <= < > = <>
+    left: Expr
+    right: Expr
+    span: Span
+
+
+@dataclass(frozen=True)
+class Logical:
+    """用「かつ」或「または」连起来的比较（不能混用）"""
+    op: str          # "かつ" 或 "または"
+    items: tuple[Comparison, ...]
+    span: Span
+
+
+Condition = Comparison | Logical
+
+
+@dataclass(frozen=True)
+class Branch:
+    """一个分支。condition 为 None 表示「そうでなければ」"""
+    condition: Condition | None
+    body: tuple[Statement, ...]
+    span: Span
+
+
+@dataclass(frozen=True)
+class If:
+    """もし文：もし…ならば、…そうでなく…ならば、…そうでなければ、…ここまで。"""
+    branches: tuple[Branch, ...]
+    span: Span
+
+
+Statement = Sentence | Assignment | If
+
+
 @dataclass(frozen=True)
 class Program:
-    sentences: tuple[Sentence | Assignment, ...]
+    sentences: tuple[Statement, ...]
     span: Span
 
 
 # ---------- 打印成树（调试用） ----------
+
+COMPARISON_WORDS = {">=": "以上", "<=": "以下", "<": "未満", ">": "を超える", "=": "等しい", "<>": "でない"}
+
 
 def dump(node) -> str:
     """把语法树画出来：
@@ -173,6 +216,16 @@ def _describe(node) -> tuple[str, list]:
             return f"文 → {bind.name}とする", list(steps)
         case Assignment(target=target, value=value):
             return f"代入 {target.name}", [value]
+        case If(branches=branches):
+            return "もし", list(branches)
+        case Branch(condition=None, body=body):
+            return "そうでなければ", list(body)
+        case Branch(condition=condition, body=body):
+            return "ならば", [condition, *body]
+        case Logical(op=op, items=items):
+            return op, list(items)
+        case Comparison(op=op, left=left, right=right):
+            return f"比較 {COMPARISON_WORDS[op]}", [left, right]
         case Step(args=args, verb=verb):
             return f"手順 {verb.lemma}（{verb.form.value}）", list(args)
         case Arg(particle=particle, value=value):

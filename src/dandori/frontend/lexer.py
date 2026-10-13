@@ -4,7 +4,7 @@
     1. 空白 → 跳过
     2. 数字 → 一直读到不是数字为止
     3. 「   → 一直读到 」为止
-    4. 记号 → + - * / ( ) 、 。
+    4. 记号 → + - * / ( ) 、 。 以及比较符号 >= <= < > = <> != ≧ ≦ ≠
     5. 查词典，取最长匹配 → 助词、动词、指示语、キーワード、声明过的用語
     6. 汉字、片假名、英文字母开头 → 名字（语法设计 5.3）
     7. 都不是 → 记一条错误，留下"不明"占位 Token，继续往后扫
@@ -28,6 +28,12 @@ from dandori.frontend.tokens import Token, TokenKind
 
 _WHITESPACE = set(" \t\r\n　")
 _DIGITS = set("0123456789")
+# 比较符号：先试两个字符的，再试一个字符的。值是标准写法
+_COMPARE = {
+    ">=": ">=", "<=": "<=", "<>": "<>", "!=": "<>",
+    ">": ">", "<": "<", "=": "=",
+    "≧": ">=", "≦": "<=", "≠": "<>",
+}
 _SYMBOLS = {
     "+": TokenKind.OPERATOR,
     "-": TokenKind.OPERATOR,
@@ -67,6 +73,8 @@ class _Lexer:
                 self._string()
             elif ch in _SYMBOLS:
                 self._emit(_SYMBOLS[ch], self.pos, self.pos + 1, value=ch)
+            elif (op := self.text[self.pos:self.pos + 2]) in _COMPARE or (op := ch) in _COMPARE:
+                self._emit(TokenKind.COMPARE, self.pos, self.pos + len(op), value=_COMPARE[op])
             elif ch == "ー" and self._between_numbers():
                 self.errors.append(Diagnostic.make("E1003", Span(self.pos, self.pos + 1)))
                 self.pos += 1
@@ -166,7 +174,10 @@ class _Lexer:
         span = Span(start, self.pos)
         looks_like_name = (any(_is_name_char(c) for c in word) and any(_is_hiragana(c) for c in word)
                            and not _looks_like_verb(word))
-        if looks_like_name:
+        if word.startswith("なら"):
+            # 「合計が0なら、」：只认「ならば」（语法设计 6.4）
+            self.errors.append(Diagnostic.make("E1009", span))
+        elif looks_like_name:
             self.errors.append(Diagnostic.make("E1004", span, word=word, hint=_name_hint(word)))
         else:
             self.errors.append(Diagnostic.make("E1001", span, word=word))
@@ -243,7 +254,7 @@ class _Lexer:
 
     def _recognizable_at(self, i: int) -> bool:
         ch = self.text[i]
-        return (ch in _WHITESPACE or ch in _DIGITS or ch in _SYMBOLS or ch == "「"
+        return (ch in _WHITESPACE or ch in _DIGITS or ch in _SYMBOLS or ch in _COMPARE or ch == "「"
                 or self.lexicon.matches_at(self.text, i))
 
     def _between_numbers(self) -> bool:

@@ -6,6 +6,7 @@
     3. 必需的参数都齐了吗？
     4. 类型对不对？                     → 例如不能把文字列拿去相加
     5. 名字定义过吗？类型有没有被改变？   → 符号表（语法设计 5.5）
+    6. もし文之后，变量是不是一定有值？   → 确定赋值（语法设计 6.6）
 
 能在运行前发现的错误，都在这里发现。通过检查的程序，执行时只可能遇到
 "运行时才知道"的问题（比如除以 0）。
@@ -47,8 +48,23 @@ class BoundAssignment:
 
 
 @dataclass(frozen=True)
+class BoundBranch:
+    condition: ast.Condition | None      # None 表示「そうでなければ」
+    body: tuple[BoundStatement, ...]
+
+
+@dataclass(frozen=True)
+class BoundIf:
+    branches: tuple[BoundBranch, ...]
+    span: Span
+
+
+BoundStatement = BoundSentence | BoundAssignment | BoundIf
+
+
+@dataclass(frozen=True)
 class BoundProgram:
-    sentences: tuple[BoundSentence | BoundAssignment, ...]
+    sentences: tuple[BoundStatement, ...]
 
 
 def analyze(program: ast.Program, registry: Registry, source: Source
@@ -68,15 +84,79 @@ class _Analyzer:
         self.last_type: Type | None = None
         # 符号表：名字 → 类型。类型为 None 表示定义时的值有错误，类型未知
         self.symbols: dict[str, Type | None] = {}
+        # 此时"一定有值"的名字。symbols 记录"出现过的名字和类型"，
+        # defined 记录"不论走了哪个分支，此时都已经赋过值"的名字
+        self.defined: set[str] = set()
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
-        sentences = []
-        for sentence in program.sentences:
-            if isinstance(sentence, ast.Assignment):
-                sentences.append(self._assignment(sentence))
-            else:
-                sentences.append(self._sentence(sentence))
-        return BoundProgram(tuple(sentences)), self.errors
+        return BoundProgram(self._statements(program.sentences)), self.errors
+
+    def _statements(self, statements) -> tuple[BoundStatement, ...]:
+        bound = []
+        for statement in statements:
+            match statement:
+                case ast.Assignment():
+                    bound.append(self._assignment(statement))
+                case ast.If():
+                    bound.append(self._if(statement))
+                case _:
+                    bound.append(self._sentence(statement))
+        return tuple(bound)
+
+    # ---------- もし文 ----------
+
+    def _if(self, node: ast.If) -> BoundIf:
+        """确定赋值：每个分支都从进入もし之前的状态开始，结束后取所有分支的交集
+
+            もし…ならば、区分は「大口」とする。               → {区分}
+            そうでなければ、区分は「小口」とする。             → {区分}
+            ここまで。                                        交集 {区分}：区分 一定有值
+
+        没有「そうでなければ」时，"一个分支都没走"也是一种可能，此时什么都没定义。
+        """
+        outer_last = self.last_type
+        before = set(self.defined)
+        outcomes = []
+        branches = []
+
+        for branch in node.branches:
+            self.defined = set(before)
+            if branch.condition is not None:
+                self.last_type = outer_last          # 条件属于外层，「それ」指向もし之前的结果
+                self._check_condition(branch.condition)
+            self.last_type = None                    # 「それ」不跨越块的边界
+            body = self._statements(branch.body)
+            outcomes.append(self.defined)
+            branches.append(BoundBranch(branch.condition, body))
+
+        if node.branches[-1].condition is not None:
+            outcomes.append(before)                  # 没有「そうでなければ」：可能一个分支都不走
+        self.defined = set.intersection(*outcomes)
+        self.last_type = None                        # 事先不知道走了哪个分支
+        return BoundIf(tuple(branches), node.span)
+
+    def _check_condition(self, condition: ast.Condition) -> None:
+        if isinstance(condition, ast.Logical):
+            for item in condition.items:
+                self._check_comparison(item)
+        else:
+            self._check_comparison(condition)
+
+    def _check_comparison(self, comparison: ast.Comparison) -> None:
+        left = self._type_of(comparison.left)
+        right = self._type_of(comparison.right)
+
+        if comparison.op in (">=", "<=", "<", ">"):
+            # 以上・以下・未満・超える：只能比较数
+            for expr, actual in ((comparison.left, left), (comparison.right, right)):
+                if actual is not None and actual is not Type.NUMBER:
+                    self._error("E3012", expr.span, op=ast.COMPARISON_WORDS[comparison.op],
+                                actual=self._describe_actual(expr, actual))
+        elif left is not None and right is not None:
+            # 等于・不等于：类型相同，且为数或文字列
+            comparable = (Type.NUMBER, Type.STRING)
+            if left is not right or left not in comparable:
+                self._error("E3013", comparison.span, left=left.value, right=right.value)
 
     def _assignment(self, assignment: ast.Assignment) -> BoundAssignment:
         """税率は0.1とする。"""
@@ -87,6 +167,7 @@ class _Analyzer:
 
     def _define(self, target: ast.NameRef, new: Type | None) -> None:
         """登记名字。重新赋值可以，改变类型不行"""
+        self.defined.add(target.name)
         old = self.symbols.get(target.name)
         if old is not None and new is not None and old is not new:
             self._error("E3009", target.span, name=target.name, old=old.value, new=new.value)
@@ -178,6 +259,9 @@ class _Analyzer:
                 if name not in self.symbols:
                     self._error("E3010", expr.span, name=name)
                     return None
+                if name not in self.defined:
+                    # 在某些分支里定义过，但不是所有情况下都有值
+                    self._error("E3014", expr.span, name=name)
                 return self.symbols[name]
             case ast.ErrorExpr():
                 return None

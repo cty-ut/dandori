@@ -217,3 +217,87 @@ def test_name_as_value(run):
 def test_assignment_errors(run, code, expected):
     _, errors = run(code)
     assert [e.code for e in errors] == expected
+
+
+# ---------- 阶段 2-2：もし文 ----------
+
+IF_PROGRAM = """
+もし合計が100以上ならば、
+  区分は「大」とする。
+そうでなく合計>=10ならば、
+  区分は「中」とする。
+そうでなければ、
+  区分は「小」とする。
+ここまで。
+"""
+
+
+def test_if_structure(run):
+    program, errors = run(IF_PROGRAM)
+    assert errors == []
+    (stmt,) = program.sentences
+    assert isinstance(stmt, ast.If)
+    first, second, other = stmt.branches
+    assert (first.condition.op, first.condition.right.value) == (">=", 100)
+    assert (second.condition.op, second.condition.right.value) == (">=", 10)
+    assert other.condition is None
+    assert [b.body[0].value.value for b in stmt.branches] == ["大", "中", "小"]
+
+
+@pytest.mark.parametrize("cond, op", [
+    ("合計が1以上", ">="), ("合計が1以下", "<="), ("合計が1未満", "<"),
+    ("合計が1を超える", ">"), ("合計が1", "="), ("合計が1でない", "<>"),
+    ("合計≧1", ">="), ("合計<>1", "<>"),
+])
+def test_comparison_forms(run, cond, op):
+    program, errors = run(f"もし{cond}ならば、ここまで。")
+    assert errors == []
+    assert program.sentences[0].branches[0].condition.op == op
+
+
+def test_logical(run):
+    program, errors = run("もし合計が1以上かつ件数<5かつ区分が「大」ならば、ここまで。")
+    assert errors == []
+    condition = program.sentences[0].branches[0].condition
+    assert condition.op == "かつ"
+    assert len(condition.items) == 3
+
+
+def test_nested_if(run):
+    program, errors = run("""
+        もし合計が1以上ならば、
+          もし件数が2以上ならば、
+            1を表示する。
+          ここまで。
+        ここまで。
+    """)
+    assert errors == []
+    inner = program.sentences[0].branches[0].body[0]
+    assert isinstance(inner, ast.If)
+
+
+def test_comma_after_naraba_is_optional(run):
+    _, errors = run("もし合計が1ならば\n1を表示する。\nそうでなければ\n2を表示する。\nここまで。")
+    assert errors == []
+
+
+@pytest.mark.parametrize("code, expected", [
+    ("もし合計が1、ここまで。", ["E2011"]),
+    ("もし合計が1ならば、1を表示する。", ["E2012"]),
+    ("ここまで。", ["E2013"]),
+    ("そうでなければ、1を表示する。", ["E2013"]),
+    ("もし合計>1かつ合計<5または合計=9ならば、ここまで。", ["E2014"]),
+    ("もし合計ならば、ここまで。", ["E2015"]),
+    ("もしならば、ここまで。", ["E2015"]),
+    ("もし合計が1件ならば、ここまで。", ["E2015"]),     # 条件后面有看不懂的内容
+])
+def test_if_errors(run, code, expected):
+    _, errors = run(code)
+    assert [e.code for e in errors] == expected
+
+
+def test_error_inside_branch_keeps_if_structure(run):
+    # 分支内的错误不会吞掉「ここまで」，所以不会有连锁错误
+    program, errors = run("もし合計が1ならば、\n100表示する。\nここまで。\n2を表示する。")
+    assert [e.code for e in errors] == ["E2007"]
+    assert len(program.sentences) == 2
