@@ -614,6 +614,14 @@ class _Parser:
         """
         expr = self._primary()
         while self._current().kind is K.PARTICLE and self._current().text == "の":
+            # 「請求一覧.xlsx」の「10月」シート：文件名 ＋ 表名（语法设计 19）
+            if (isinstance(expr, ast.String) and expr.sheet is None and self._peek(1).kind is K.STRING
+                    and self._peek(2).kind is K.NAME and self._peek(2).value == "シート"):
+                self._advance()
+                sheet = self._advance()
+                end = self._advance()
+                expr = ast.String(expr.value, Span(expr.span.start, end.span.end), sheet.value)
+                continue
             no = self._advance()
             token = self._current()
             if token.kind is K.KEYWORD and token.text in _SORT_KEYWORDS:      # 金額の大きい順
