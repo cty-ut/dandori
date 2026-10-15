@@ -1,4 +1,4 @@
-# 共通の設定（record.sh から実行する。作業フォルダは例の写し）
+# 共通の設定（full.tape から読み込む。record.sh から実行する。作業フォルダは例の写し）
 Set Shell "bash"
 Set FontFamily "HackGen Console"
 Set FontSize 17
