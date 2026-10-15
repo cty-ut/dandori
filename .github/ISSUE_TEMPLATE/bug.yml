@@ -1,0 +1,25 @@
+name: 不具合の報告 / Bug 报告
+description: 段取りが期待どおりに動かない / 段取り没有按预期工作
+labels: [bug]
+body:
+  - type: textarea
+    id: program
+    attributes:
+      label: プログラム / 程序
+      description: 問題が起きる最小のプログラム。顧客のデータは貼らないでください / 能复现问题的最小程序。请不要贴客户数据
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待した結果と実際の結果 / 期望的结果与实际结果
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 環境 / 环境
+      description: "例：Windows 11、Python 3.12、段取り 0.0.1"
+    validations:
+      required: true

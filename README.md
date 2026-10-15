@@ -119,9 +119,30 @@ dandori-platform 起動
 
 AI 向けの文法リファレンス（日本語）：[src/dandori_ai/reference/grammar.md](src/dandori_ai/reference/grammar.md)
 
+## ロードマップ
+
+| 方向 | 内容 |
+|---|---|
+| 実際のデータ | **Excel の読み書き**（作業中）→ 既存の Excel への転記 → 総合振込ファイル（全銀形式） |
+| 文書 | 利用者向けの手引き（チュートリアル、言語リファレンス）を GitHub Pages で公開 |
+| 業務の領域 | 支払処理、請求書の作成、勤怠の集計、仕訳 |
+| 書く体験 | VS Code 拡張（色分け、エラー表示）、コメント、整形 |
+| AI 助手 | 評価の拡充、Claude・OpenAI での評価 |
+| 基盤 | 失敗の通知、Web 画面、途中で承認を待つ処理 |
+| 配布 | pip なしで使える Windows 版、PyPI |
+| 信頼性 | ランダムな入力での検査、大きな表の性能 |
+
+## 貢献
+
+歓迎します。[CONTRIBUTING.md](CONTRIBUTING.md) と [`good first issue`](https://github.com/cty-ut/dandori/labels/good%20first%20issue) をご覧ください。文法の変更は、実装の前に Issue で設計を相談します。
+
 ## 開発
 
 ```bash
 pip install -e ".[dev,ai]"
 pytest
 ```
+
+## ライセンス
+
+[Apache License 2.0](LICENSE)

@@ -102,9 +102,30 @@ dandori-platform 起動
 | [AI助手设计.md](AI助手设计.md) | AI 助手、评测结果 |
 | [平台设计.md](平台设计.md) | 平台（予定、批准、历史） |
 
+## 路线图
+
+| 方向 | 内容 |
+|---|---|
+| 真实数据 | **Excel 读写**（进行中）→ 往已有的 Excel 中转记 → 総合振込文件（全銀格式） |
+| 文档 | 面向用户的手册（教程、语言参考），用 GitHub Pages 发布 |
+| 业务领域 | 支付处理、请求书制作、考勤汇总、会计分录 |
+| 写程序的体验 | VS Code 扩展（高亮、错误提示）、注释、格式化 |
+| AI 助手 | 扩充评测，用 Claude、OpenAI 评测 |
+| 平台 | 失败通知、网页界面、中途等待批准 |
+| 交付 | 不需要 pip 的 Windows 版、PyPI |
+| 可靠性 | 随机输入测试、大表的性能 |
+
+## 参与贡献
+
+欢迎！请看 [CONTRIBUTING.md](CONTRIBUTING.md) 和 [`good first issue`](https://github.com/cty-ut/dandori/labels/good%20first%20issue)。语法的改动，实现前先在 Issue 中讨论设计。
+
 ## 开发
 
 ```bash
 pip install -e ".[dev,ai]"
 pytest
 ```
+
+## 许可证
+
+[Apache License 2.0](LICENSE)

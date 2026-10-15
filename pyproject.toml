@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,13 @@ name = "dandori"
 version = "0.0.1"
 description = "段取り：日本の業務担当者が読めて、企業が安心して動かせる業務自動化言語"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/cty-ut/dandori"
+Issues = "https://github.com/cty-ut/dandori/issues"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-cov", "ruff"]

@@ -1,0 +1,20 @@
+name: 機能の提案 / 功能提议
+description: 新しい機能、動詞、業務の知識など / 新功能、新动词、业务知识等
+labels: [enhancement]
+body:
+  - type: textarea
+    id: work
+    attributes:
+      label: どんな業務か / 什么业务
+      description: 今どうやっているか（Excel の手作業など）、何に困っているか / 现在怎么做、哪里不方便
+    validations:
+      required: true
+  - type: textarea
+    id: program
+    attributes:
+      label: こう書けたらいい / 希望能这样写
+      description: 段取りでこう書きたい、という例 / 希望用段取り怎么写
+      render: text
+  - type: markdown
+    attributes:
+      value: 文法の追加・変更は、実装の前に設計を相談します（CONTRIBUTING.md）/ 语法的增加和修改，实现前需要先讨论设计
