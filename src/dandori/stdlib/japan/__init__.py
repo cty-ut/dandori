@@ -23,17 +23,13 @@ _STRINGS = frozenset({Type.STRING, Type.STRING_LIST})
 
 def check_company_holidays(path: str, ctx):
     """「暦の会社休日」：编译时读取，第一列必须是日付"""
-    _company_days(path, ctx.base_dir)
+    _company_days(path, ctx.base_dir, ctx.notes)
 
 
-def _company_days(path: str, base_dir):
-    from dandori.connectors import ConnectorError
-    from dandori.connectors.csv import read_csv
-    from dandori.stdlib.files import resolve
-    try:
-        table = read_csv(resolve(path, base_dir), path)
-    except ConnectorError as e:
-        raise VerbError(e.code, **e.params) from None
+def _company_days(path: str, base_dir, notes: dict | None = None):
+    """会社休日的文件：CSV 或 Excel（可以带表名）"""
+    from dandori.stdlib.files import load_rule_file
+    table = load_rule_file(path, base_dir, notes)
     if table.type.columns[0][1] is not Type.DATE:
         raise VerbError("E3061", file=path)
     return table, {row[0] for row in table.rows if row[0] is not BLANK}
@@ -78,11 +74,11 @@ def register(registry: Registry) -> None:
     registry.add_setting(SettingSpec("暦", "会社休日", SettingKind.FILE, check_company_holidays))
 
     def company_calendar(ctx):
-        from dandori.stdlib.files import check_permission, resolve
+        from dandori.stdlib.files import check_permission, record_rule_read
         path = ctx.settings[("暦", "会社休日")]
         check_permission(ctx, "読み込み", path)
         table, days = _company_days(path, ctx.base_dir)
-        ctx.record_read(path, resolve(path, ctx.base_dir), len(table))
+        record_rule_read(ctx, path, len(table))
         return calendar.with_company_holidays(days)
 
     registry.calendar_factories["会社"] = company_calendar

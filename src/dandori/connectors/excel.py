@@ -58,6 +58,16 @@ def read_excel(path: Path, display_name: str, sheet: str | None) -> ExcelTable:
     return _table(cells, display_name, name)
 
 
+def sheet_names(path: Path) -> list[str]:
+    """表名的列表（AI 助手查看文件时用）"""
+    import openpyxl
+    book = openpyxl.load_workbook(path, read_only=True)
+    try:
+        return list(book.sheetnames)
+    finally:
+        book.close()
+
+
 def _choose_sheet(names: list[str], wanted: str | None, display_name: str) -> str:
     listing = "、".join(f"「{n}」" for n in names)
     if wanted is None:

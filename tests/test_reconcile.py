@@ -210,7 +210,7 @@ def test_setting_columns_must_exist_in_verb_tables(tmp_path):
 
 def test_example_program(tmp_path):
     import shutil
-    for name in ("入金明細.csv", "請求一覧.csv", "名義対応.csv", "入金消込.dandori"):
+    for name in ("入金明細.csv", "請求一覧.xlsx", "名義対応.csv", "入金消込.dandori"):
         shutil.copy(EXAMPLE / name, tmp_path / name)
     output = []
     code = (tmp_path / "入金消込.dandori").read_text(encoding="utf-8")
@@ -219,9 +219,11 @@ def test_example_program(tmp_path):
     judgements = [line.split()[0] for line in output[0].split("\n")[1:]]
     assert judgements == ["自動消込", "要確認", "要確認", "自動消込", "入金不明", "要確認", "自動消込", "要確認",
                           "未入金", "未入金"]
-    for name, rows in (("消込済", 3), ("要確認", 4), ("督促候補", 2), ("入金不明", 1)):
-        text = (tmp_path / "出力" / f"{name}.csv").read_bytes().decode("utf-8-sig")
-        assert text.count("\r\n") == rows + 1
+    # 銀行の入金明細は CSV、会社の請求一覧は Excel、結果は 1 つの Excel にシートごと
+    import openpyxl
+    book = openpyxl.load_workbook(tmp_path / "出力" / "消込結果.xlsx")
+    assert book.sheetnames == ["消込済", "要確認", "督促候補", "入金不明"]
+    assert [book[name].max_row - 1 for name in book.sheetnames] == [3, 4, 2, 1]
 
 
 def test_failed_reconcile_does_not_cascade(tmp_path):

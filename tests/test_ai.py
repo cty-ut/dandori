@@ -77,29 +77,47 @@ def test_check_program(folder):
     assert box.checks == 2
 
 
-def test_inspect_csv_sends_no_data_by_default(folder):
-    info = json.loads(Toolbox(folder).execute("inspect_csv", {"file": "明細.csv"}).content)
+def test_inspect_file_sends_no_data_by_default(folder):
+    info = json.loads(Toolbox(folder).execute("inspect_file", {"file": "明細.csv"}).content)
     assert info["columns"] == [{"name": "取引先", "type": "文字列", "blanks": 0},
                                {"name": "金額", "type": "数", "blanks": 0}]
     assert info["rows"] == 2
     assert "sample" not in info and "山田商事" not in json.dumps(info, ensure_ascii=False)
 
 
-def test_inspect_csv_counts_blanks(folder):
+def test_inspect_file_counts_blanks(folder):
     # 空欄数是统计信息：AI 要知道有空欄，才会想到问"空欄怎么处理"
     (folder / "空欄.csv").write_text("取引先,金額\nA,100\nB,\n,300\n", encoding="utf-8")
-    info = json.loads(Toolbox(folder).execute("inspect_csv", {"file": "空欄.csv"}).content)
+    info = json.loads(Toolbox(folder).execute("inspect_file", {"file": "空欄.csv"}).content)
     assert [c["blanks"] for c in info["columns"]] == [1, 1]
 
 
-def test_inspect_csv_with_samples(folder):
-    info = json.loads(Toolbox(folder, allow_samples=True).execute("inspect_csv", {"file": "明細.csv"}).content)
+def test_inspect_file_with_samples(folder):
+    info = json.loads(Toolbox(folder, allow_samples=True).execute("inspect_file", {"file": "明細.csv"}).content)
     assert info["sample"][0] == ["山田商事", "1000"]
 
 
-def test_inspect_csv_missing_and_outside(folder):
-    assert Toolbox(folder).execute("inspect_csv", {"file": "無い.csv"}).is_error
-    assert Toolbox(folder).execute("inspect_csv", {"file": "../外.csv"}).is_error
+def test_inspect_excel_lists_sheets(folder):
+    import openpyxl
+    wb = openpyxl.Workbook()
+    wb.active.title = "10月"
+    wb.active.append(["請求番号", "金額"])
+    wb.active.append(["A001", 100])
+    wb.create_sheet("11月").append(["番号"])
+    wb.save(folder / "請求一覧.xlsx")
+    info = json.loads(Toolbox(folder).execute("inspect_file", {"file": "請求一覧.xlsx", "sheet": None}).content)
+    assert [s["sheet"] for s in info["sheets"]] == ["10月", "11月"]
+    assert info["sheets"][0]["columns"][1] == {"name": "金額", "type": "数", "blanks": 0}
+    assert "A001" not in json.dumps(info, ensure_ascii=False)           # 既定ではデータを送らない
+    one = json.loads(Toolbox(folder).execute("inspect_file", {"file": "請求一覧.xlsx", "sheet": "10月"}).content)
+    assert one["sheet"] == "10月" and one["rows"] == 1
+    bad = Toolbox(folder).execute("inspect_file", {"file": "請求一覧.xlsx", "sheet": "12月"})
+    assert bad.is_error
+
+
+def test_inspect_file_missing_and_outside(folder):
+    assert Toolbox(folder).execute("inspect_file", {"file": "無い.csv"}).is_error
+    assert Toolbox(folder).execute("inspect_file", {"file": "../外.csv"}).is_error
 
 
 def test_ask_user(folder):
@@ -135,7 +153,7 @@ def test_tool_schemas_are_strict():
 
 def test_loop_fixes_errors_then_submits(folder):
     provider = FakeProvider([
-        AssistantTurn("確認します", [call("inspect_csv", 1, file="明細.csv")]),
+        AssistantTurn("確認します", [call("inspect_file", 1, file="明細.csv")]),
         AssistantTurn("", [call("check_program", 2, program=BAD)]),
         submit(BAD, n=3),                              # 差し戻される
         submit(GOOD, "金額の合計を表示します", n=4),
@@ -228,12 +246,12 @@ class FakeOpenAI:
 
 
 def test_openai_compatible_request_shape():
-    tool_call = SimpleNamespace(id="c1", function=SimpleNamespace(name="inspect_csv",
+    tool_call = SimpleNamespace(id="c1", function=SimpleNamespace(name="inspect_file",
                                                                   arguments='{"file": "明細.csv"}'))
     client = FakeOpenAI(SimpleNamespace(content=None, tool_calls=[tool_call]))
     provider = OpenAICompatibleProvider("deepseek-chat", "DEEPSEEK_API_KEY", "deepseek", client=client)
     turn = provider.complete("SYSTEM", [{"role": "user", "text": "要望"}], TOOLS)
-    assert turn.tool_calls == [ToolCall("c1", "inspect_csv", {"file": "明細.csv"})]
+    assert turn.tool_calls == [ToolCall("c1", "inspect_file", {"file": "明細.csv"})]
     request = client.calls[0]
     assert request["messages"][0] == {"role": "system", "content": "SYSTEM"}
     assert request["tools"][0]["type"] == "function"
@@ -243,7 +261,7 @@ def test_openai_compatible_request_shape():
                {"role": "tool_results", "results": [{"id": "c1", "content": "{}", "is_error": False}]}]
     provider.complete("SYSTEM", history, TOOLS)
     messages = client.calls[1]["messages"]
-    assert messages[2]["tool_calls"][0]["function"] == {"name": "inspect_csv", "arguments": '{"file": "明細.csv"}'}
+    assert messages[2]["tool_calls"][0]["function"] == {"name": "inspect_file", "arguments": '{"file": "明細.csv"}'}
     assert messages[3] == {"role": "tool", "tool_call_id": "c1", "content": "{}"}
 
 

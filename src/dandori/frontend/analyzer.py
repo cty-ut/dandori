@@ -331,7 +331,12 @@ class _Analyzer:
             except VerbError as e:
                 self._error(e.code, node.value.span, **e.params)
         if value is not None and spec.kind is SettingKind.FILE:
-            self.resources.append(Resource(Effect.READ, value, f"「{value}」を読み込みます", False, node.value.span))
+            from dandori.stdlib.files import describe_file
+            sheet = getattr(value, "sheet", None)
+            explain = f"{describe_file(str(value), sheet)}を読み込みます"
+            if note := self.infer_context.notes.get((str(value), sheet)):
+                explain += f"（{note}）"
+            self.resources.append(Resource(Effect.READ, str(value), explain, False, node.value.span, sheet=sheet))
         self.settings[(node.namespace, node.key)] = value
         return BoundSetting(node.namespace, node.key, value)
 
@@ -358,6 +363,12 @@ class _Analyzer:
         if kind in (SettingKind.FILE, SettingKind.TEXT):
             if node.up_to or not isinstance(value, ast.String):
                 return None
+            if value.sheet is not None:
+                if kind is SettingKind.TEXT:
+                    self._error("E3076", value.span)
+                    return None
+                from dandori.runtime.values import FileName     # 规则文件是 Excel 的某张表
+                return FileName(value.value, value.sheet)
             return value.value
         return None
 

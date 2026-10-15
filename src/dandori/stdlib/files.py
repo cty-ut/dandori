@@ -106,6 +106,23 @@ def load_table(file_name: str, base_dir: Path, sheet: str | None = None) -> tupl
         raise VerbError(e.code, **e.params) from None
 
 
+def load_rule_file(path: str, base_dir: Path, notes: dict | None = None) -> Table:
+    """设定文中的规则文件（名義対応、会社休日）：CSV 或 Excel。path 可以带表名（values.FileName）
+
+    notes：编译时给「説明」的补充说明（表名、表头的行）
+    """
+    sheet = getattr(path, "sheet", None)
+    table, note = load_table(str(path), base_dir, sheet)
+    if note and notes is not None:
+        notes[(str(path), sheet)] = note
+    return table
+
+
+def record_rule_read(ctx, path: str, rows: int) -> None:
+    """执行日志：读取了规则文件"""
+    ctx.record_read(str(path), resolve(str(path), ctx.base_dir, READ_SUFFIXES), rows)
+
+
 def infer_yomikomu(args: dict[str, ast.Expr], types: dict, ctx: InferContext):
     """编译时：读取文件，确定列定义"""
     path = _literal_path(args, "読み込む")

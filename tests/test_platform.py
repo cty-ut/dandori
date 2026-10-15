@@ -435,3 +435,25 @@ def test_platform_uses_only_public_api():
                 assert node.module == "dandori.api", f"{path.name}: {node.module}"
             if isinstance(node, python_ast.ImportFrom) and node.module and node.module.startswith("dandori_ai"):
                 pytest.fail(f"{path.name} が AI 助手に依存しています")
+
+
+def test_excel_rule_file_diff(platform, tmp_path):
+    import openpyxl
+    work = tmp_path / "xl"
+    work.mkdir()
+
+    def save(rows):
+        wb = openpyxl.Workbook()
+        wb.active.title = "休日"
+        for row in rows:
+            wb.active.append(row)
+        wb.save(work / "会社休日.xlsx")
+
+    save([["日付"], [datetime(2026, 11, 2)]])
+    (work / "暦.dandori").write_text(RULED.replace("会社休日.csv", "会社休日.xlsx"), encoding="utf-8")
+    platform.register(work / "暦.dandori")
+    platform.approve(platform.review("暦"), "田中")
+    save([["日付"], [datetime(2026, 11, 2)], [datetime(2026, 11, 4)]])
+    review = platform.review("暦")
+    assert review.changes == ["「会社休日.xlsx」"]
+    assert "+2026/11/04" in review.rule_diffs["会社休日.xlsx"]       # Excel でも中身の差分が読める

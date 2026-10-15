@@ -23,13 +23,11 @@
 
 from __future__ import annotations
 
-from dandori.connectors import ConnectorError
-from dandori.connectors.csv import read_csv
 from dandori.frontend.conjugation import Conjugation
 from dandori.money import Money
 from dandori.plugin.registry import Param, Registry, SettingKind, SettingSpec, VerbError, VerbSpec
 from dandori.runtime import values
-from dandori.stdlib.files import check_permission, resolve
+from dandori.stdlib.files import check_permission, load_rule_file, record_rule_read
 from dandori.stdlib.japan.names import normalize_name
 from dandori.table.interface import BLANK, Table
 from dandori.types import NUMERIC, TableType, Type
@@ -99,14 +97,12 @@ def infer_reconcile(args, types, ctx):
 
 def check_alias_file(path: str, ctx):
     """名義対応表：编译时读取，检查是两列"""
-    _load_alias(path, ctx.base_dir)
+    _load_alias(path, ctx.base_dir, ctx.notes)
 
 
-def _load_alias(path: str, base_dir) -> dict[str, str]:
-    try:
-        table = read_csv(resolve(path, base_dir), path)
-    except ConnectorError as e:
-        raise VerbError(e.code, **e.params) from None
+def _load_alias(path: str, base_dir, notes: dict | None = None) -> dict[str, str]:
+    """名義対応表：CSV 或 Excel（可以带表名）"""
+    table = load_rule_file(path, base_dir, notes)
     if len(table.type.columns) != 2 or any(t is not Type.STRING for _, t in table.type.columns):
         raise VerbError("E3056", file=path)
     return {normalize_name(a): normalize_name(b) for a, b in table.rows
@@ -127,7 +123,7 @@ def reconcile(ctx, deposits: Table, invoices: Table):
     if alias_path:
         check_permission(ctx, "読み込み", alias_path)
         alias = _load_alias(alias_path, ctx.base_dir)
-        ctx.record_read(alias_path, resolve(alias_path, ctx.base_dir), len(alias))
+        record_rule_read(ctx, alias_path, len(alias))
 
     diff_type = Type.MONEY if Type.MONEY in (dep_amount_type, inv_amount_type) else Type.NUMBER
     columns = layout(deposits.type, invoices.type, diff_type)

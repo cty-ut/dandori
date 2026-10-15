@@ -311,7 +311,12 @@ class Platform:
             file = program.path.parent / path
             if file.is_file():
                 data = file.read_bytes()
-                rule_files[path] = {"sha256": fingerprint(data), "text": _decode(data)}
+                if file.suffix.lower() in (".xlsx", ".xlsm"):
+                    # Excel 是二进制：用表的内容显示差异
+                    shown = api.table_text(str(path), program.path.parent, getattr(path, "sheet", None))
+                else:
+                    shown = _decode(data)
+                rule_files[path] = {"sha256": fingerprint(data), "text": shown}
             else:
                 rule_files[path] = {"sha256": None, "text": None}
         return Snapshot(text, fingerprint(text), rule_files, result)

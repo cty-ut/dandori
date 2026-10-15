@@ -57,8 +57,29 @@ def load_cases(folder: Path) -> list[dict]:
 
 
 def prepare(case: dict, directory: Path) -> None:
-    for name, text in case["files"].items():
+    for name, text in case.get("files", {}).items():
         (directory / name).write_text(text, encoding="utf-8")
+    for name, sheets in case.get("workbooks", {}).items():
+        _workbook(directory / name, sheets)
+
+
+def _workbook(path: Path, sheets: dict) -> None:
+    """Excel の用例：シート名 → 行。{"date": "2026-10-31"} は日付、{"yen": 1000} は金額の書式のセル"""
+    import openpyxl
+    book = openpyxl.Workbook()
+    book.remove(book.active)
+    for name, rows in sheets.items():
+        sheet = book.create_sheet(name)
+        for r, row in enumerate(rows, start=1):
+            for c, value in enumerate(row, start=1):
+                cell = sheet.cell(r, c)
+                if isinstance(value, dict) and "date" in value:
+                    cell.value, cell.number_format = date.fromisoformat(value["date"]), "yyyy/mm/dd"
+                elif isinstance(value, dict) and "yen" in value:
+                    cell.value, cell.number_format = value["yen"], '"¥"#,##0'
+                else:
+                    cell.value = value
+    book.save(path)
 
 
 def evaluate_program(case: dict, program: str, directory: Path) -> tuple[list, bool | None]:
@@ -141,7 +162,8 @@ def run_case(case: dict, provider) -> CaseResult:
 
 
 def build_request(request: str, directory: Path, program_name: str) -> str:
-    files = "、".join(sorted(p.name for p in directory.glob("*.csv"))) or "（なし）"
+    files = "、".join(sorted(p.name for p in directory.iterdir()
+                             if p.suffix.lower() in (".csv", ".xlsx", ".xlsm"))) or "（なし）"
     return (f"要望：\n{request}\n\nこのフォルダにあるファイル：{files}\n"
             f"作るプログラムのファイル名：{program_name}")
 

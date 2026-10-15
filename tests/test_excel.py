@@ -352,3 +352,50 @@ def test_transaction_last_line_of_defense(tmp_path):
     with pytest.raises(VerbError) as e:
         t.stage_sheet(tmp_path / "b.xlsx", "b.xlsx", "x", table, False)
     assert e.value.code == "E5008"
+
+
+# ---------- 規則のファイル（9-3） ----------
+
+def test_company_holidays_from_excel(tmp_path):
+    book(tmp_path / "社内規程.xlsx", {"説明": [["この表は総務部が管理"]],
+                                      "会社休日": [["会社休日（2026年）"], ["日付", "名前"],
+                                                   [datetime(2026, 11, 2), "創立記念日"]]})
+    code = ("暦の会社休日は「社内規程.xlsx」の「会社休日」シートとする。\n"
+            "2026年10月30日+1会社営業日を表示する。")
+    result = compile_source(Source(code), base_dir=tmp_path)
+    assert result.errors == []
+    assert result.resources[0].explain == "「社内規程.xlsx」の「会社休日」シートを読み込みます（見出しは2行目）"
+    assert result.rule_files == ("社内規程.xlsx",)
+    output, errors = run_code(code, tmp_path)
+    assert errors == [] and output == ["2026年11月4日"]      # 11/2 は会社休日、11/3 は文化の日
+
+
+def test_alias_file_from_excel(tmp_path):
+    from dandori.api import run_with_log
+    book(tmp_path / "名義対応.xlsx", {"対応": [["振込名義", "請求側の名義"], ["ﾀﾅｶ ｲﾁﾛｳ", "タナカショウテン"]]})
+    (tmp_path / "入金.csv").write_text("振込依頼人,金額\nﾀﾅｶ ｲﾁﾛｳ,33000\n", encoding="utf-8")
+    (tmp_path / "請求.csv").write_text("番号,フリガナ,請求金額\nA1,タナカショウテン,33000\n", encoding="utf-8")
+    code = ("「入金.csv」を読み込んで、入金とする。\n「請求.csv」を読み込んで、請求とする。\n"
+            "消込の名義は、入金の振込依頼人と請求のフリガナとする。\n"
+            "消込の金額は、入金の金額と請求の請求金額とする。\n"
+            "消込の名義対応は「名義対応.xlsx」とする。\n"
+            "入金を請求に消し込んで、その判定を表示する。")
+    output, errors = run_code(code, tmp_path)
+    assert errors == [] and "自動消込" in output[0]
+    outcome = run_with_log(Source(code, "p.dandori"), Context(output=lambda _: None, base_dir=tmp_path),
+                           log_dir=tmp_path / "実行記録")
+    import json
+    reads = json.loads(outcome.log_path.with_suffix(".json").read_text(encoding="utf-8"))["reads"]
+    assert "名義対応.xlsx" in [r["file"] for r in reads]
+
+
+def test_schedule_cannot_have_sheet():
+    assert [e.code for e in compile_source(Source("実行の予定は、「a.xlsx」の「b」シートとする。")).errors] \
+        == ["E3076"]
+
+
+def test_table_text_for_diffs(invoices):
+    from dandori.api import table_text
+    text = table_text("請求一覧.xlsx", invoices, "11月")
+    assert text == "請求番号,金額\nB001,1000\n"
+    assert table_text("無い.xlsx", invoices) is None
