@@ -103,10 +103,13 @@ def test_inspect_excel_lists_sheets(folder):
     wb.active.title = "10月"
     wb.active.append(["請求番号", "金額"])
     wb.active.append(["A001", 100])
-    wb.create_sheet("11月").append(["番号"])
+    wb.create_sheet("メモ").append(["A社は支払いが遅れがち"])
     wb.save(folder / "請求一覧.xlsx")
     info = json.loads(Toolbox(folder).execute("inspect_file", {"file": "請求一覧.xlsx", "sheet": None}).content)
-    assert [s["sheet"] for s in info["sheets"]] == ["10月", "11月"]
+    assert [s["sheet"] for s in info["sheets"]] == ["10月", "メモ"]
+    # データのないシート（メモ）は、そのセルの文字を「列名」として送らない
+    assert info["sheets"][1] == {"sheet": "メモ", "rows": 0, "note": "データの行がありません"}
+    assert "支払いが遅れがち" not in json.dumps(info, ensure_ascii=False)
     assert info["sheets"][0]["columns"][1] == {"name": "金額", "type": "数", "blanks": 0}
     assert "A001" not in json.dumps(info, ensure_ascii=False)           # 既定ではデータを送らない
     one = json.loads(Toolbox(folder).execute("inspect_file", {"file": "請求一覧.xlsx", "sheet": "10月"}).content)

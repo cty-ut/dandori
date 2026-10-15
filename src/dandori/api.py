@@ -272,6 +272,10 @@ def describe_file(file_name: str, base_dir: Path, sheet: str | None = None, samp
 def _table_info(table, sample_rows: int) -> dict:
     from dandori.runtime.values import format_value
     from dandori.table.interface import BLANK
+    if len(table) == 0:
+        # 没有数据的表（备注用的表等）：只有一格时，那格的文字会被当作"列名"。
+        # 备注里可能写着敏感的内容，所以不发送列名，只告诉 AI 这里没有数据
+        return {"rows": 0, "note": "データの行がありません"}
     info = {
         "columns": [{"name": shown, "type": t.value, "blanks": sum(row[i] is BLANK for row in table.rows)}
                     for i, (shown, (_, t)) in enumerate(zip(table.display_names, table.type.columns))],
