@@ -156,3 +156,74 @@ def _header_index(rows: list[tuple[int, list[str]]]) -> int:
     if max(filled(cells) for _, cells in rows) <= 1:
         return 0
     return next(index for index, (_, cells) in enumerate(rows) if filled(cells) > 1)
+
+
+# ---------- 写出（语法设计 19.3） ----------
+
+# Excel 的表名：31 个字符以内，不能用这些字符
+_SHEET_FORBIDDEN = set("[]:*?/\\")
+YEN_FORMAT = '"¥"#,##0'          # 金額：读回来时仍是金額（格式中有 ¥）
+DATE_FORMAT = "yyyy/mm/dd"
+
+
+def check_sheet_name(name: str) -> None:
+    if not name or len(name) > 31 or any(c in _SHEET_FORBIDDEN for c in name) or name.startswith("'"):
+        raise ConnectorError("E3077", sheet=name)
+
+
+def default_sheet(file_name: str) -> str:
+    """不写表名时：文件名去掉扩展名（「出力/集計.xlsx」→「集計」）"""
+    from pathlib import PurePosixPath
+    return PurePosixPath(file_name.replace("\\", "/")).stem
+
+
+def write_excel(sheets: list[tuple[str, Table]]) -> bytes:
+    """表 → .xlsx 的字节。一个文件可以有多张表（按写出的顺序）
+
+    写出真正的数和日期（打开后可以直接用 Excel 计算），不是文字：
+    - 金額：「¥#,##0」格式；数：常规格式；日付：「yyyy/mm/dd」
+    - 「00123」这样的编码是文字列，保持文字
+    - 表头加粗、冻结；列宽按内容调整
+    """
+    import io
+
+    import openpyxl
+    from openpyxl.styles import Font
+
+    from dandori.money import Money
+    from dandori.table.interface import BLANK
+    from dandori.text import display_width
+
+    book = openpyxl.Workbook()
+    book.remove(book.active)
+    for name, table in sheets:
+        sheet = book.create_sheet(name)
+        sheet.append(list(table.display_names))
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        sheet.freeze_panes = "A2"
+        widths = [display_width(str(n)) for n in table.display_names]
+        for row in table.rows:
+            values = []
+            for i, value in enumerate(row):
+                if value is BLANK:
+                    values.append(None)
+                    continue
+                if isinstance(value, Money):
+                    values.append(value.amount)
+                    shown = f"¥{value.amount:,}"
+                else:
+                    values.append(value)
+                    shown = dates.format_csv(value) if isinstance(value, date) else str(value)
+                widths[i] = max(widths[i], display_width(shown))
+            sheet.append(values)
+        for i, (_, column_type) in enumerate(table.type.columns, start=1):
+            letter = openpyxl.utils.get_column_letter(i)
+            fmt = {"金額": YEN_FORMAT, "日付": DATE_FORMAT}.get(column_type.value)
+            if fmt:
+                for (cell,) in sheet.iter_rows(min_row=2, min_col=i, max_col=i):
+                    cell.number_format = fmt
+            sheet.column_dimensions[letter].width = min(widths[i - 1] + 2, 60)
+    buffer = io.BytesIO()
+    book.save(buffer)
+    return buffer.getvalue()

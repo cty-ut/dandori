@@ -52,8 +52,9 @@ def outside_folder(file_name: str) -> PurePosixPath | None:
 
 
 READ_SUFFIXES = (".csv", ".xlsx", ".xlsm")
-WRITE_SUFFIXES = (".csv",)
-_ALLOWED = {READ_SUFFIXES: "読み込めるのは CSV と Excel（.xlsx、.xlsm）", WRITE_SUFFIXES: "書き出せるのは CSV だけです"}
+WRITE_SUFFIXES = (".csv", ".xlsx")             # .xlsm は書き出さない（マクロを壊さないため）
+_ALLOWED = {READ_SUFFIXES: "読み込めるのは CSV と Excel（.xlsx、.xlsm）",
+            WRITE_SUFFIXES: "書き出せるのは CSV と Excel（.xlsx）"}
 
 
 def resolve(file_name: str, base_dir: Path, suffixes: tuple[str, ...] = (".csv",)) -> Path:
@@ -134,37 +135,60 @@ def _reason(error: VerbError) -> str:
 
 # ---------- 書き出す・上書きする ----------
 
-def _write_target(path: ast.String, base_dir: Path) -> Path:
-    if path.sheet is not None and Path(path.value).suffix.lower() not in excel.SUFFIXES:
+def _is_excel(file_name: str) -> bool:
+    return Path(file_name).suffix.lower() in excel.SUFFIXES
+
+
+def _write_target(path: ast.String, base_dir: Path, ctx: InferContext, overwrite: bool) -> Path:
+    """编译时：写出的文件。Excel 时检查表名，并给「説明」补充说明"""
+    if path.sheet is not None and not _is_excel(path.value):
         raise VerbError("E3075", file=path.value)
-    return resolve(path.value, base_dir, WRITE_SUFFIXES)
+    target = resolve(path.value, base_dir, WRITE_SUFFIXES)
+    if _is_excel(path.value):
+        sheet = path.sheet or excel.default_sheet(path.value)
+        try:
+            excel.check_sheet_name(sheet)
+        except ConnectorError as e:
+            raise VerbError(e.code, **e.params) from None
+        notes = [] if path.sheet else [f"「{sheet}」シート"]
+        if overwrite:
+            notes.append("ファイル全体を置き換えます。ほかのシートや書式は残りません")
+        if notes:
+            ctx.notes[(path.value, path.sheet)] = "、".join(notes)
+    return target
 
 
 def check_kakidasu(args, types, ctx: InferContext):
     """编译时：新建的文件不能已经存在"""
     path = _literal_path(args, "書き出す")
-    if _write_target(path, ctx.base_dir).exists():
+    if _write_target(path, ctx.base_dir, ctx, False).exists():
         raise VerbError("E3039", file=path.value)
 
 
 def check_uwagaki(args, types, ctx: InferContext):
-    _write_target(_literal_path(args, "上書きする"), ctx.base_dir)
+    _write_target(_literal_path(args, "上書きする"), ctx.base_dir, ctx, True)
+
+
+def _stage(ctx, table, path, overwrite: bool) -> None:
+    values.check_no_fraction(table)                # 带零头的金額不能写出（语法设计 12.5）
+    target = resolve(path, ctx.base_dir, WRITE_SUFFIXES)
+    if _is_excel(path):
+        sheet = getattr(path, "sheet", None) or excel.default_sheet(path)
+        ctx.transaction.stage_sheet(target, str(path), sheet, table, overwrite)
+    else:
+        ctx.transaction.stage(target, str(path), write_csv(table), overwrite, len(table))
 
 
 def kakidasu(ctx, table, path):
     """集計を「集計.csv」に書き出す（新建）"""
     check_permission(ctx, "書き出し", path)
-    values.check_no_fraction(table)                # 带零头的金額不能写出（语法设计 12.5）
-    target = resolve(path, ctx.base_dir, WRITE_SUFFIXES)
-    ctx.transaction.stage(target, str(path), write_csv(table), False, len(table))
+    _stage(ctx, table, path, False)
 
 
 def uwagaki(ctx, table, path):
     """「集計.csv」を集計で上書きする"""
     check_permission(ctx, "上書き", path)
-    values.check_no_fraction(table)
-    target = resolve(path, ctx.base_dir, WRITE_SUFFIXES)
-    ctx.transaction.stage(target, str(path), write_csv(table), True, len(table))
+    _stage(ctx, table, path, True)
 
 
 def register(registry: Registry) -> None:

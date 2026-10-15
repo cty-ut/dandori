@@ -209,12 +209,6 @@ def test_sheet_only_where_files_are_used(invoices):
     assert codes("名前は「請求一覧.xlsx」の「10月」シートとする。", invoices) == ["E3076"]
 
 
-def test_writing_excel_is_not_yet_supported(invoices):
-    code = "「請求一覧.xlsx」の「11月」シートを読み込んで、"
-    assert codes(code + "「出力/a.xlsx」に書き出す。", invoices) == ["E3027"]
-    assert codes(code + "「出力/a.csv」の「x」シートに書き出す。", invoices) == ["E3075"]
-
-
 def test_xlsm_and_permissions(tmp_path):
     book(tmp_path / "マクロ.xlsm", {"s": [["a", "b"], [1, 2]]})
     code = "この処理が使うもの：\n  読み込み：「マクロ.xlsm」\nここまで。\n「マクロ.xlsm」を読み込んで、表示する。"
@@ -232,3 +226,129 @@ def test_execution_log_records_excel_read(invoices):
                            log_dir=invoices / "実行記録")
     record = json.loads(outcome.log_path.with_suffix(".json").read_text(encoding="utf-8"))
     assert record["reads"][0]["file"] == "請求一覧.xlsx" and record["reads"][0]["rows"] == 1
+
+
+# ---------- 書き出し（9-2） ----------
+
+READ = "「請求一覧.xlsx」の「10月」シートを読み込んで、請求とする。\n"
+
+
+def run_program(code, folder, dry_run=False):
+    output = []
+    ctx = Context(output=output.append, base_dir=folder, dry_run=dry_run)
+    errors = run(Source(code), ctx)
+    return [e.code for e in errors], ctx
+
+
+def test_write_sheets_into_one_book(invoices):
+    code = READ + ("請求から請求金額が100000以上のものを絞り込んで、「出力/結果.xlsx」の「大口」シートに書き出す。\n"
+                   "請求から請求金額が100000未満のものを絞り込んで、「出力/結果.xlsx」の「小口」シートに書き出す。")
+    result = compile_source(Source(code), base_dir=invoices)
+    assert [r.explain for r in result.resources][1:] == [
+        "「出力/結果.xlsx」の「大口」シートを新規作成します",
+        "「出力/結果.xlsx」の「小口」シートを新規作成します"]
+    errors, ctx = run_program(code, invoices)
+    assert errors == []
+    assert ctx.transaction.report(done=True) == [
+        "「出力/結果.xlsx」の「大口」シートを新規作成しました（1行）",
+        "「出力/結果.xlsx」の「小口」シートを新規作成しました（1行）"]
+    wb = openpyxl.load_workbook(invoices / "出力" / "結果.xlsx")
+    assert wb.sheetnames == ["大口", "小口"]
+    assert wb["大口"]["A2"].value == "A001" and wb["小口"]["A2"].value == "A002"
+
+
+def test_round_trip_keeps_types(invoices):
+    errors, _ = run_program(READ + "請求を「出力/写し.xlsx」に書き出す。", invoices)
+    assert errors == []
+    original, _ = table_of(READ, invoices)
+    copy, _ = table_of("「出力/写し.xlsx」を読み込む。", invoices)
+    assert copy.type == original.type                       # 金額・日付・文字列（00123）がそのまま
+    assert copy.rows == original.rows
+    sheet = openpyxl.load_workbook(invoices / "出力" / "写し.xlsx")["写し"]
+    assert sheet["C2"].value == 109560 and sheet["C2"].number_format == '"¥"#,##0'   # 本物の数
+    assert sheet["D2"].number_format == "yyyy/mm/dd" and sheet["E2"].value == "00123"
+    assert sheet["A1"].font.bold and sheet.freeze_panes == "A2"
+
+
+def test_default_sheet_name_and_blanks(tmp_path):
+    (tmp_path / "明細.csv").write_text("取引先,金額\n山田商事,\n佐藤物産,2.5\n", encoding="utf-8")
+    code = "「明細.csv」を読み込んで、「出力/明細.xlsx」に書き出す。"
+    result = compile_source(Source(code), base_dir=tmp_path)
+    assert result.resources[1].explain == "「出力/明細.xlsx」を新規作成します（「明細」シート）"
+    assert run_program(code, tmp_path)[0] == []
+    sheet = openpyxl.load_workbook(tmp_path / "出力" / "明細.xlsx")["明細"]
+    assert sheet["B2"].value is None and sheet["B3"].value == 2.5
+
+
+def test_write_errors(invoices):
+    write = READ + "請求を「出力/a.xlsx」の「x」シートに書き出す。"
+    assert codes(write + "請求を「出力/a.xlsx」の「x」シートに書き出す。", invoices) == ["E3040"]
+    assert codes(READ + "請求を「出力/a.xlsx」に書き出す。請求を「出力/a.xlsx」の「a」シートに書き出す。",
+                 invoices) == ["E3040"]                     # 既定のシート名「a」と同じ
+    assert codes(write + "「出力/a.xlsx」の「y」シートを請求で上書きする。", invoices) == ["E3078"]
+    assert codes(READ + "請求を「出力/a.xlsx」の「1月[速報]」シートに書き出す。", invoices) == ["E3077"]
+    assert codes(READ + "請求を「出力/a.xlsx」の「" + "あ" * 32 + "」シートに書き出す。", invoices) == ["E3077"]
+    assert codes(READ + "請求を「出力/a.xlsm」に書き出す。", invoices) == ["E3027"]
+    assert codes(READ + "請求を「出力/a.csv」の「x」シートに書き出す。", invoices) == ["E3075"]
+    assert codes(READ + "請求を「請求一覧.xlsx」に書き出す。", invoices) == ["E3039"]
+
+
+def test_overwrite_replaces_whole_book(invoices):
+    code = READ + "「請求一覧.xlsx」の「11月」シートを請求で上書きする。"
+    result = compile_source(Source(code), base_dir=invoices)
+    assert result.resources[1].explain == ("「請求一覧.xlsx」の「11月」シートを上書きします"
+                                           "（ファイル全体を置き換えます。ほかのシートや書式は残りません）")
+    assert run_program(code, invoices)[0] == []
+    assert openpyxl.load_workbook(invoices / "請求一覧.xlsx").sheetnames == ["11月"]   # 「10月」は残らない
+
+
+def test_dry_run_and_failure_write_nothing(invoices):
+    code = READ + "請求を「出力/a.xlsx」に書き出す。"
+    errors, ctx = run_program(code, invoices, dry_run=True)
+    assert errors == [] and ctx.transaction.report(done=False) == ["「出力/a.xlsx」の「a」シートを新規作成します（2行）"]
+    assert not (invoices / "出力").exists()
+    failing = code + "請求の請求金額を0で割って表示する。"
+    assert run_program(failing, invoices)[0] != []
+    assert not (invoices / "出力").exists()
+
+
+def test_money_with_fraction_cannot_be_written(invoices):
+    # 1円未満の端数がある金額は、CSV と同じく書き出せない（语法设计 12.5）
+    from dandori.stdlib.files import kakidasu
+    from dandori.table.interface import Table
+    from dandori.types import TableType, Type
+    table = Table(TableType((("金額", Type.MONEY),)), [(Money(Decimal("1.5")),)], ["x"], ["金額"])
+    ctx = Context(base_dir=invoices)
+    with pytest.raises(Exception) as e:
+        kakidasu(ctx, table, "出力/a.xlsx")
+    assert getattr(e.value, "code", None) == "E5010"
+
+
+def test_log_entries_have_sheets(invoices):
+    import json
+    from dandori.api import run_with_log
+    code = READ + "請求を「出力/a.xlsx」の「x」シートに書き出す。"
+    outcome = run_with_log(Source(code, "p.dandori"), Context(output=lambda _: None, base_dir=invoices),
+                           log_dir=invoices / "実行記録")
+    record = json.loads(outcome.log_path.with_suffix(".json").read_text(encoding="utf-8"))
+    assert record["writes"] == [{"file": "出力/a.xlsx", "sheet": "x", "rows": 2, "action": "新規作成"}]
+    assert "「出力/a.xlsx」の「x」シートを新規作成（2行）" in outcome.log_path.read_text(encoding="utf-8")
+
+
+def test_transaction_last_line_of_defense(tmp_path):
+    # 编译时已经检查过；执行时直接调用也不会写错
+    from dandori.plugin.registry import VerbError
+    from dandori.runtime.transaction import Transaction
+    from dandori.table.interface import Table
+    from dandori.types import TableType, Type
+    table = Table(TableType((("a", Type.NUMBER),)), [(1,)], ["x"], ["a"])
+    t = Transaction()
+    t.stage_sheet(tmp_path / "a.xlsx", "a.xlsx", "x", table, False)
+    for sheet, overwrite, code in (("x", False, "E3040"), ("y", True, "E3078")):
+        with pytest.raises(VerbError) as e:
+            t.stage_sheet(tmp_path / "a.xlsx", "a.xlsx", sheet, table, overwrite)
+        assert e.value.code == code
+    (tmp_path / "b.xlsx").write_bytes(b"")
+    with pytest.raises(VerbError) as e:
+        t.stage_sheet(tmp_path / "b.xlsx", "b.xlsx", "x", table, False)
+    assert e.value.code == "E5008"

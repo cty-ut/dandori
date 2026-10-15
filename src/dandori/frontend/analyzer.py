@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
@@ -125,6 +125,7 @@ class Resource:
     conditional: bool      # 写在もし里：不一定执行
     span: Span
     permission: str = "読み込み"   # 需要的权限：「読み込み」「書き出し」「上書き」
+    sheet: str | None = None      # Excel 的表名（程序中写了时）
 
 
 @dataclass(frozen=True)
@@ -223,13 +224,28 @@ class _Analyzer:
                 self.rule_data.append(name)
 
     def _check_resources(self) -> None:
-        """同一个文件写两次（E3040）。写出后再读取（E3041）在 _step 中、尝试读取之前检查"""
-        written: set[str] = set()
+        """同一个地方写两次（E3040）。写出后再读取（E3041）在 _step 中、尝试读取之前检查
+
+        Excel：同一个文件的不同表可以分别写出，合成一个工作簿；同一张表写两次、
+        同一个文件混用「書き出す」和「上書きする」是错误（语法设计 19.3）
+        """
+        from dandori.connectors.excel import SUFFIXES, default_sheet
+        written: set[tuple] = set()
+        modes: dict[str, str] = {}
         for resource in self.resources:
-            if resource.effect is Effect.WRITE:
-                if resource.path in written:
-                    self._error("E3040", resource.span, file=resource.path)
-                written.add(resource.path)
+            if resource.effect is not Effect.WRITE:
+                continue
+            if PurePosixPath(resource.path).suffix.lower() in SUFFIXES:
+                sheet = resource.sheet or default_sheet(resource.path)
+                if modes.setdefault(resource.path, resource.permission) != resource.permission:
+                    self._error("E3078", resource.span, file=resource.path)
+                    continue
+                key, shown = (resource.path, sheet), f"{resource.path}」の「{sheet}"
+            else:
+                key, shown = (resource.path, None), resource.path
+            if key in written:
+                self._error("E3040", resource.span, file=shown)
+            written.add(key)
 
     def _statements(self, statements) -> tuple[BoundStatement, ...]:
         bound = []
@@ -600,8 +616,8 @@ class _Analyzer:
             explain = spec.explain.format(file=describe_file(path.value, path.sheet))
             if note := self.infer_context.notes.get((path.value, path.sheet)):
                 explain += f"（{note}）"
-            self.resources.append(Resource(spec.effect, path.value, explain,
-                                           self.if_depth > 0, path.span, spec.permission or "読み込み"))
+            self.resources.append(Resource(spec.effect, path.value, explain, self.if_depth > 0, path.span,
+                                           spec.permission or "読み込み", path.sheet))
 
         self.last_type = result
         return BoundStep(spec, bound, step.span, result)

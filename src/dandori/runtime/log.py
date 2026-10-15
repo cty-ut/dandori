@@ -81,7 +81,8 @@ def render_text(record: dict) -> str:
         lines += [f"  「{r['file']}」 {r['rows']}行（指紋：{r['sha256'][:12]}）" for r in record["reads"]]
     if record["writes"]:
         lines.append("書き出し：")
-        lines += [f"  「{w['file']}」を{w['action']}（{w['rows']}行）" for w in record["writes"]]
+        lines += [f"  「{w['file']}」" + (f"の「{w['sheet']}」シート" if w.get("sheet") else "")
+                  + f"を{w['action']}（{w['rows']}行）" for w in record["writes"]]
     result = record["result"]
     seconds = record["duration_seconds"]
     if result["status"] == "ok":
