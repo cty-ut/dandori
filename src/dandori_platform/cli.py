@@ -131,10 +131,10 @@ def _list(platform: Platform) -> None:
         return
     for s in statuses:
         mark = "" if s.state == "承認済み" else "⚠ "
-        approval = f"　最後の承認：{s.approval}" if s.approval else ""
+        approval = f"  最後の承認：{s.approval}" if s.approval else ""
         changes = f"（{'、'.join(s.changes)}）" if s.changes else ""
         print(f"【{s.program.name}】{mark}{s.state}{changes}{approval}")
-        print(f"  予定：{s.schedule}" + (f"　次の実行：{s.next_run}" if s.next_run else ""))
+        print(f"  予定：{s.schedule}" + (f"  次の実行：{s.next_run}" if s.next_run else ""))
         if s.last is None:
             print("  前回：（まだ実行していません）")
         else:

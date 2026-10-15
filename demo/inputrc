@@ -1,0 +1,5 @@
+# VHS が打つ日本語（UTF-8）を、メタキーではなく文字として受け取る
+set input-meta on
+set output-meta on
+set convert-meta off
+set enable-bracketed-paste off

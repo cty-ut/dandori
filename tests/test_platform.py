@@ -184,7 +184,7 @@ def test_cli_flow(tmp_path, folder, capsys):
     assert "すでに承認されています" in capsys.readouterr().out
     edit(folder / "集計.dandori", "毎月25日", "毎月20日")
     assert run_cli(["一覧"], tmp_path) == 0
-    assert "⚠ 変更あり（承認待ち）（プログラム）　最後の承認：田中" in capsys.readouterr().out
+    assert "⚠ 変更あり（承認待ち）（プログラム）  最後の承認：田中" in capsys.readouterr().out
     assert run_cli(["承認", "集計", "--承認者", "鈴木", "--はい"], tmp_path) == 0
     assert "+実行の予定は、「毎月20日" in capsys.readouterr().out
 

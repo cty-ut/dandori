@@ -4,6 +4,8 @@
 
 [![CI](https://github.com/cty-ut/dandori/actions/workflows/ci.yml/badge.svg)](https://github.com/cty-ut/dandori/actions/workflows/ci.yml)
 
+![段取り的演示：日语程序、説明、试运行](demo/demo.gif)
+
 **业务人员读得懂、AI 写得出、企业敢运行**：面向日本业务自动化的编程语言。
 
 ```
