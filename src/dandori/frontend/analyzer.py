@@ -170,6 +170,7 @@ class _Analyzer:
         self.resources: list[Resource] = []
         self.rule_data: list[str] = []           # 使用的规则数据的名字（如「祝日」）
         self.permissions: list | None = None     # 权限声明
+        self.file_slot = False                   # 正在检查动词的文件参数：可以写表名（「〜」の「〜」シート）
 
     def program(self, program: ast.Program) -> tuple[BoundProgram, list[Diagnostic]]:
         self._collect_permissions(program.sentences)
@@ -550,7 +551,11 @@ class _Analyzer:
         types: dict[str, ValueType | None] = {}
         for param in spec.params:
             if param.name in bound and param.kind in (ParamKind.VALUE, ParamKind.COLUMN, ParamKind.BLANKS):
-                types[param.name] = self._check_arg(spec, param, bound[param.name])
+                self.file_slot = param.name == spec.resource_param
+                try:
+                    types[param.name] = self._check_arg(spec, param, bound[param.name])
+                finally:
+                    self.file_slot = False
         for param in spec.params:
             if param.name in bound and param.kind in (ParamKind.CONDITION, ParamKind.COLUMNS, ParamKind.SORT):
                 source = bound.get(param.columns_of)
@@ -591,7 +596,11 @@ class _Analyzer:
         if spec.effect is Effect.WRITE and self.loop_depth > 0:
             self._error("E3042", step.span)
         if isinstance(path, ast.String) and len(self.errors) == errors_before:
-            self.resources.append(Resource(spec.effect, path.value, spec.explain.format(path=path.value),
+            from dandori.stdlib.files import describe_file
+            explain = spec.explain.format(file=describe_file(path.value, path.sheet))
+            if note := self.infer_context.notes.get((path.value, path.sheet)):
+                explain += f"（{note}）"
+            self.resources.append(Resource(spec.effect, path.value, explain,
                                            self.if_depth > 0, path.span, spec.permission or "読み込み"))
 
         self.last_type = result
@@ -715,7 +724,9 @@ class _Analyzer:
                 return Type.DATE if value is not None else None       # None：不存在的日期，已报错
             case ast.Today():
                 return Type.DATE
-            case ast.String():
+            case ast.String(sheet=sheet):
+                if sheet is not None and not self.file_slot:
+                    self._error("E3076", expr.span)          # 表名只能用在读写文件的地方
                 return Type.STRING
             case ast.Sore():
                 if self.last_type is None:

@@ -24,6 +24,20 @@ Number = int | Decimal
 Value = Number | Money | str | list | Table
 
 
+class FileName(str):
+    """带表名的文件名：「請求一覧.xlsx」の「10月」シート（语法设计 19）
+
+    本身就是文件名（权限、路径的检查照旧），另外带着表名。
+    """
+
+    sheet: str | None
+
+    def __new__(cls, name: str, sheet: str | None = None):
+        obj = super().__new__(cls, name)
+        obj.sheet = sheet
+        return obj
+
+
 def canonical(n: Number) -> Number:
     if isinstance(n, Decimal) and n == n.to_integral_value():
         return int(n)

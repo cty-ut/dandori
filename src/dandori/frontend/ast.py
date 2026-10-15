@@ -46,6 +46,8 @@ class DayKind:
 class String:
     value: str
     span: Span
+    # Excel 的表：「請求一覧.xlsx」の「10月」シート → value 是文件名，sheet 是表名（语法设计 19）
+    sheet: str | None = None
 
 
 @dataclass(frozen=True)

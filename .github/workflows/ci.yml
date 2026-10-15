@@ -68,6 +68,8 @@ jobs:
           /tmp/clean/bin/dandori 説明 -c "実行の予定は、「毎月第3営業日 9時」とする。"
           /tmp/clean/bin/python -c "from dandori_ai.reference import system_prompt; assert '段取り' in system_prompt()"
           /tmp/clean/bin/dandori-platform 一覧 --場所 /tmp/ws
+          /tmp/clean/bin/python -c "import openpyxl; wb = openpyxl.Workbook(); wb.active.append(['取引先', '金額']); wb.active.append(['山田商事', 1000]); wb.save('/tmp/明細.xlsx')"
+          /tmp/clean/bin/dandori 実行 -c "「明細.xlsx」を読み込んで、表示する。"
       - uses: actions/upload-artifact@v4
         with:
           name: dist

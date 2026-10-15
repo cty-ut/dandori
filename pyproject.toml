@@ -10,6 +10,8 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = "README.md"
+# 日本的业务数据大多在 Excel 里：openpyxl 是语言核心唯一的依赖（纯 Python）
+dependencies = ["openpyxl>=3.1"]
 
 [project.urls]
 Repository = "https://github.com/cty-ut/dandori"

@@ -42,16 +42,25 @@ def read_csv(path: Path, display_name: str) -> Table:
         raise ConnectorError("E3028", file=display_name)
 
     header = [cell.strip() for cell in records[0]]
-    names = _column_names(header, display_name)
-
-    raw_rows, origins = [], []
+    rows = []
     for line_no, record in enumerate(records[1:], start=2):
         if not any(cell.strip() for cell in record):
             continue                                   # 完全空白的行跳过
         if len(record) != len(header):
             raise ConnectorError("E3021", file=display_name, row=str(line_no))
-        raw_rows.append([cell.strip() for cell in record])
-        origins.append(f"{display_name} の {line_no}行目")
+        rows.append((line_no, [cell.strip() for cell in record]))
+    return build_table(header, rows, display_name, display_name)
+
+
+def build_table(header: list[str], rows: list[tuple[int, list[str]]], display_name: str, origin: str) -> Table:
+    """文字的格子 → 带类型的表。CSV 和 Excel 共用（Excel 把单元格先转成与 CSV 相同的文字）
+
+    rows：(行号, 各列的文字)。origin：「明細.csv」或「請求.xlsx（10月）」，用于记录每一行的来源
+    """
+    names = _column_names(header, display_name)
+    raw_rows = [cells for _, cells in rows]
+    line_numbers = [line_no for line_no, _ in rows]
+    origins = [f"{origin} の {line_no}行目" for line_no in line_numbers]
 
     # 类型推断：一列中所有非空的值都是数 → 数；否则 → 文字列。
     # 只要有一个值像编码（以 0 开头，如「00123」），整列就是文字列：
@@ -64,16 +73,17 @@ def read_csv(path: Path, display_name: str) -> Table:
         is_number = (cells and all(p is not None for p in parsed)
                      and not any(_CODE.match(_strip_sign(normalize(c))) for c in cells))
         if not is_number:
-            is_date = cells and all(_parse_date(c, display_name, raw_rows, i) is not None for c in cells)
+            is_date = cells and all(_parse_date(c, display_name, raw_rows, line_numbers, i) is not None
+                                    for c in cells)
             types.append(Type.DATE if is_date else Type.STRING)
         elif any(isinstance(p, Money) for p in parsed):
             types.append(Type.MONEY)
         else:
             types.append(Type.NUMBER)
 
-    rows = [tuple(_convert(cell, t) for cell, t in zip(row, types)) for row in raw_rows]
+    converted = [tuple(_convert(cell, t) for cell, t in zip(row, types)) for row in raw_rows]
     table_type = TableType(tuple(zip(names, types)))
-    return Table(table_type, rows, origins, header)
+    return Table(table_type, converted, origins, header)
 
 
 def _decode(data: bytes, display_name: str) -> str:
@@ -123,12 +133,12 @@ def _parse_number(cell: str):
     return Money(value) if money else value
 
 
-def _parse_date(cell: str, display_name: str, raw_rows, column: int):
+def _parse_date(cell: str, display_name: str, raw_rows, line_numbers, column: int):
     """日付，或 None。形式上是日期但不存在时，报错并指出行号（语法设计 13.8）"""
     try:
         return dates.parse_cell(normalize(cell))
     except dates.InvalidDate as e:
-        row = next(i for i, r in enumerate(raw_rows, start=2) if r[column] == cell)
+        row = next(n for n, r in zip(line_numbers, raw_rows) if r[column] == cell)
         hint = f"（{e.hint}）" if e.hint else ""
         raise ConnectorError("E3050", file=display_name, row=str(row), value=cell, hint=hint) from None
 

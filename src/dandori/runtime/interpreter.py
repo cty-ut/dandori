@@ -251,6 +251,8 @@ class _Executor:
 
     def evaluate(self, expr: ast.Expr, last, row: Row | None = None):
         match expr:
+            case ast.String(value=value, sheet=sheet) if sheet is not None:
+                return values.FileName(value, sheet)
             case ast.Number(value=value) | ast.String(value=value) | ast.DateLiteral(value=value):
                 return value
             case ast.Today():

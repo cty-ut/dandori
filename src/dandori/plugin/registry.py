@@ -63,6 +63,8 @@ class InferContext:
     base_dir: Path                   # 程序文件所在的目录：相对路径以它为准
     # 到目前为止的设定文：(名前空间, 设定名) → 值（语法设计 16.2）
     settings: dict = field(default_factory=dict)
+    # 读取文件时的补充说明：(文件名, 表名) → 「見出しは3行目」等，显示在「説明」中（语法设计 19）
+    notes: dict = field(default_factory=dict)
 
 
 class SettingKind(Enum):
