@@ -225,23 +225,54 @@ def _accepts(accepts) -> list[str] | None:
     return sorted("表" if a is TableType else a.value for a in accepts)
 
 
-def describe_csv(file_name: str, base_dir: Path, sample_rows: int = 0) -> dict:
-    """CSV 的结构：列名、类型、行数、各列的空欄数。sample_rows > 0 时附上前几行（默认不附：不发送客户数据）
-
-    空欄数是统计信息，不是数据本身；AI 要知道有空欄，才会想到问"空欄怎么处理"。
-    """
-    from dandori.connectors import ConnectorError
-    from dandori.connectors.csv import read_csv
-    from dandori.runtime.values import format_value
-    from dandori.stdlib.files import resolve
-    from dandori.table.interface import BLANK
+def table_text(file_name: str, base_dir: Path, sheet: str | None = None) -> str | None:
+    """CSV 或 Excel 的内容 → CSV 的文字（平台批准规则文件时显示差异用）。读不了时为 None"""
+    from dandori.connectors.csv import write_csv
+    from dandori.stdlib.files import load_table
     try:
-        table = read_csv(resolve(file_name, base_dir), file_name)
-    except (ConnectorError, VerbError) as e:
-        from dandori.errors import MESSAGES
+        table, _ = load_table(file_name, base_dir, sheet)
+    except VerbError:
+        return None
+    return write_csv(table).decode("utf-8-sig").replace("\r\n", "\n")
+
+
+def describe_file(file_name: str, base_dir: Path, sheet: str | None = None, sample_rows: int = 0) -> dict:
+    """CSV、Excel 的结构：列名、类型、行数、各列的空欄数（AI 助手的 inspect_file）
+
+    sample_rows > 0 时附上前几行（默认不附：不发送客户数据）。
+    空欄数是统计信息，不是数据本身；AI 要知道有空欄，才会想到问"空欄怎么处理"。
+    Excel 没有指定表时，返回所有表的结构（AI 才知道该写哪张表）。
+    """
+    from dandori.connectors import excel
+    from dandori.errors import MESSAGES
+    from dandori.stdlib.files import READ_SUFFIXES, load_table, resolve
+
+    def one(sheet_name):
+        try:
+            table, _ = load_table(file_name, base_dir, sheet_name)
+        except VerbError as e:
+            return {"error": MESSAGES[e.code].format(**e.params)}
+        return _table_info(table, sample_rows)
+
+    try:
+        path = resolve(file_name, base_dir, READ_SUFFIXES)
+    except VerbError as e:
         return {"error": MESSAGES[e.code].format(**e.params)}
+    if path.suffix.lower() not in excel.SUFFIXES or sheet is not None or not path.is_file():
+        return {"file": file_name, **({"sheet": sheet} if sheet else {}), **one(sheet)}
+    try:
+        names = excel.sheet_names(path)
+    except Exception:                                       # noqa: BLE001  壊れたファイル：読み込みと同じエラー
+        return {"file": file_name, **one(None)}
+    sheets = [{"sheet": name, **one(name)} for name in names]
+    return {"file": file_name, "sheets": sheets,
+            "note": "シートが複数あるときは「「〜」の「〜」シート」と書く" if len(names) > 1 else ""}
+
+
+def _table_info(table, sample_rows: int) -> dict:
+    from dandori.runtime.values import format_value
+    from dandori.table.interface import BLANK
     info = {
-        "file": file_name,
         "columns": [{"name": shown, "type": t.value, "blanks": sum(row[i] is BLANK for row in table.rows)}
                     for i, (shown, (_, t)) in enumerate(zip(table.display_names, table.type.columns))],
         "rows": len(table),

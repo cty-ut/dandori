@@ -3,7 +3,7 @@
 工具名只能用英文字母（三家的 API 都这样规定），说明用日文。
 所有工具都只通过公开 API（dandori.api）使用语言。
 
-默认不发送客户数据：inspect_csv 只返回列名、类型、行数、各列的空欄数（统计，不是数据）；允许时（--サンプル）才附最多 3 行。
+默认不发送客户数据：inspect_file 只返回列名、类型、行数、各列的空欄数（统计，不是数据）；允许时（--サンプル）才附最多 3 行。
 """
 
 from __future__ import annotations
@@ -33,8 +33,11 @@ TOOLS = [
     ToolSpec("check_program", "段取りのプログラムを検査する。エラー（エラーコード・行・列・メッセージ）か、"
              "問題がなければプログラムが読み書きするファイルを返す。",
              _schema({"program": {"type": "string", "description": "段取りのプログラム全体"}})),
-    ToolSpec("inspect_csv", "フォルダにある CSV ファイルの列名・型・行数と、列ごとの空欄の数（blanks）を調べる。",
-             _schema({"file": {"type": "string", "description": "ファイル名（例：明細.csv）"}})),
+    ToolSpec("inspect_file", "フォルダにある CSV・Excel ファイルの列名・型・行数と、列ごとの空欄の数（blanks）を調べる。"
+             "Excel でシートを指定しなければ、すべてのシートを調べる。",
+             _schema({"file": {"type": "string", "description": "ファイル名（例：明細.csv、請求一覧.xlsx）"},
+                      "sheet": {"type": ["string", "null"],
+                                "description": "Excel のシート名。指定しないときは null"}})),
     ToolSpec("ask_user", "要望から決まらない業務のルールを、利用者に質問する。",
              _schema({"question": {"type": "string", "description": "利用者への質問（日本語、一つずつ）"}})),
     ToolSpec("submit_program", "できあがったプログラムを提出する。検査に通らなければ差し戻される。",
@@ -66,7 +69,7 @@ class Toolbox:
     def execute(self, name: str, arguments: dict) -> ToolResult:
         if "__invalid__" in arguments:
             return ToolResult("引数が JSON として読めません。もう一度呼び出してください。", is_error=True)
-        handler = {"check_program": self.check_program, "inspect_csv": self.inspect_csv,
+        handler = {"check_program": self.check_program, "inspect_file": self.inspect_file,
                    "ask_user": self.ask_user, "submit_program": self.submit_program}.get(name)
         if handler is None:
             return ToolResult(f"「{name}」という道具はありません", is_error=True)
@@ -83,8 +86,8 @@ class Toolbox:
             return ToolResult(json.dumps({"errors": errors}, ensure_ascii=False), is_error=True)
         return ToolResult(json.dumps({"ok": True, **explain(result)}, ensure_ascii=False))
 
-    def inspect_csv(self, file: str) -> ToolResult:
-        info = api.describe_csv(file, self.base_dir, sample_rows=3 if self.allow_samples else 0)
+    def inspect_file(self, file: str, sheet: str | None = None) -> ToolResult:
+        info = api.describe_file(file, self.base_dir, sheet, sample_rows=3 if self.allow_samples else 0)
         return ToolResult(json.dumps(info, ensure_ascii=False), is_error="error" in info)
 
     def ask_user(self, question: str) -> ToolResult:
