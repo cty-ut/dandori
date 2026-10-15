@@ -4,7 +4,9 @@
 
 [![CI](https://github.com/cty-ut/dandori/actions/workflows/ci.yml/badge.svg)](https://github.com/cty-ut/dandori/actions/workflows/ci.yml)
 
-![段取りのデモ：日本語のプログラム、説明、試し実行、AI がプログラムを書く、基盤](demo/full.gif)
+[![段取りの紹介動画](demo/dandori.gif)](demo/dandori.mp4)
+
+高画質の動画（MP4）：[demo/dandori.mp4](demo/dandori.mp4)
 
 **業務担当者が読めて、AI が書けて、会社が安心して動かせる** ── 日本の業務自動化のためのプログラミング言語です。
 
