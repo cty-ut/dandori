@@ -1,5 +1,5 @@
 #!/bin/bash
-# デモの録画（README の動画）。リポジトリの直下で：bash demo/record.sh [demo|full]
+# デモの録画（README の動画）。リポジトリの直下で：bash demo/record.sh full
 #
 # 準備（例を一時フォルダに写す）はこのスクリプトが行い、VHS には表示するだけのコマンドしか打たせない。
 # VHS は文字をキー入力として送るため、設定が合わないと日本語が編集キーとして解釈され、
@@ -13,5 +13,5 @@ cd "$WORK"
 for tape in "$ROOT"/demo/*.tape; do
   sed "s|@ROOT@|$ROOT|g" "$tape" > "$WORK/$(basename "$tape")"
 done
-vhs "$WORK/${1:-demo}.tape"
-echo "録画しました：$ROOT/demo/${1:-demo}.gif（作業フォルダ：$WORK）"
+vhs "$WORK/${1:-full}.tape"
+echo "録画しました：$ROOT/demo/${1:-full}.gif（作業フォルダ：$WORK）"
