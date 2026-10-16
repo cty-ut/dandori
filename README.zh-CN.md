@@ -4,9 +4,7 @@
 
 [![CI](https://github.com/cty-ut/dandori/actions/workflows/ci.yml/badge.svg)](https://github.com/cty-ut/dandori/actions/workflows/ci.yml)
 
-[![段取り的介绍视频](demo/dandori.gif)](demo/dandori.mp4)
-
-高清视频（MP4）：[demo/dandori.mp4](demo/dandori.mp4)
+https://github.com/user-attachments/assets/15ab9348-2834-4071-8d44-2b3e1cec4332
 
 **业务人员读得懂、AI 写得出、企业敢运行**：面向日本业务自动化的编程语言。
 
