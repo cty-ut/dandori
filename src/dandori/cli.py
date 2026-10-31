@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from dandori import api, dates
+from dandori.console import tolerate_unrepresentable_chars
 from dandori.errors import Diagnostic, render
 from dandori.frontend import ast
 from dandori.frontend.lexer import tokenize
@@ -35,6 +36,7 @@ COMMANDS = [
 
 
 def main(argv: list[str] | None = None) -> int:
+    tolerate_unrepresentable_chars()   # cp932 などで表せない文字でも止まらない（Issue #1）
     parser = argparse.ArgumentParser(prog="dandori", description="段取り")
     commands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in COMMANDS:

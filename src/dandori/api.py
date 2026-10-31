@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from dandori.console import tolerate_unrepresentable_chars  # noqa: F401  CLI の出力対策：外部工具也用它
 from dandori.dates import JST  # noqa: F401  日本时间：平台等外部工具也用它
 from dandori.errors import Diagnostic
 from dandori.frontend import ast
