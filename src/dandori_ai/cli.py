@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from dandori import api
-from dandori.api import Source
+from dandori.api import Source, tolerate_unrepresentable_chars
 from dandori_ai import evals
 from dandori_ai.loop import GenerationFailed, run_session
 from dandori_ai.providers import make_provider
@@ -30,6 +30,7 @@ from dandori_ai.tools import Toolbox, explain
 
 
 def main(argv: list[str] | None = None, provider_factory=None, ask=input) -> int:
+    tolerate_unrepresentable_chars()   # cp932 などで表せない文字でも止まらない（Issue #1）
     parser = argparse.ArgumentParser(prog="dandori-ai", description="段取り AI 助手")
     commands = parser.add_subparsers(dest="command", required=True)
 
