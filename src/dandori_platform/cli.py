@@ -17,6 +17,7 @@ import sys
 import time
 from pathlib import Path
 
+from dandori.api import tolerate_unrepresentable_chars
 from dandori_platform.lock import AlreadyRunning, single_instance
 from dandori_platform.platform import Platform, PlatformError, Review
 from dandori_platform.store import Run
@@ -25,6 +26,7 @@ INTERVAL = 30            # 常驻时每隔多少秒检查一次
 
 
 def main(argv: list[str] | None = None, ask=input, clock=None, sleep=time.sleep) -> int:
+    tolerate_unrepresentable_chars()   # cp932 などで表せない文字でも止まらない（Issue #1）
     parser = argparse.ArgumentParser(prog="dandori-platform", description="段取りの基盤：予定・承認・実行履歴")
     commands = parser.add_subparsers(dest="command", required=True)
 
