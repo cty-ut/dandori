@@ -1,7 +1,9 @@
 """阶段 7：AI 助手（全部使用假模型、假客户端：不需要密钥，不花钱）"""
 
+import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -184,6 +186,15 @@ def test_loop_gives_up(folder):
 
 # ---------- 提供者：请求的形式 ----------
 
+@pytest.fixture
+def sdk_modules(monkeypatch):
+    """没有安装 ai 附加依赖时，用只含异常类的替身模块（已安装时什么也不做）"""
+    for module in ("anthropic", "openai"):
+        if importlib.util.find_spec(module) is None:
+            names = ("AuthenticationError", "RateLimitError", "APIConnectionError", "APIStatusError")
+            monkeypatch.setitem(sys.modules, module, SimpleNamespace(**{n: type(n, (Exception,), {}) for n in names}))
+
+
 class FakeAnthropic:
     def __init__(self, content, stop_reason="tool_use"):
         self.calls = []
@@ -197,7 +208,7 @@ class FakeAnthropic:
         return self._response
 
 
-def test_claude_request_shape():
+def test_claude_request_shape(sdk_modules):
     content = [SimpleNamespace(type="thinking", thinking=""),
                SimpleNamespace(type="text", text="検査します"),
                SimpleNamespace(type="tool_use", id="tu_1", name="check_program", input={"program": "x"})]
@@ -224,13 +235,13 @@ def test_claude_request_shape():
                                          "is_error": True}
 
 
-def test_claude_no_fallback_for_other_models():
+def test_claude_no_fallback_for_other_models(sdk_modules):
     client = FakeAnthropic([SimpleNamespace(type="text", text="")], stop_reason="end_turn")
     ClaudeProvider(model="claude-haiku-5-5", client=client).complete("S", [{"role": "user", "text": "x"}], TOOLS)
     assert "fallbacks" not in client.calls[0]
 
 
-def test_claude_refusal():
+def test_claude_refusal(sdk_modules):
     client = FakeAnthropic([], stop_reason="refusal")
     with pytest.raises(ProviderError):
         ClaudeProvider(client=client).complete("S", [{"role": "user", "text": "x"}], TOOLS)
@@ -248,7 +259,7 @@ class FakeOpenAI:
         return self._response
 
 
-def test_openai_compatible_request_shape():
+def test_openai_compatible_request_shape(sdk_modules):
     tool_call = SimpleNamespace(id="c1", function=SimpleNamespace(name="inspect_file",
                                                                   arguments='{"file": "明細.csv"}'))
     client = FakeOpenAI(SimpleNamespace(content=None, tool_calls=[tool_call]))
@@ -268,7 +279,7 @@ def test_openai_compatible_request_shape():
     assert messages[3] == {"role": "tool", "tool_call_id": "c1", "content": "{}"}
 
 
-def test_openai_invalid_json_arguments():
+def test_openai_invalid_json_arguments(sdk_modules):
     tool_call = SimpleNamespace(id="c1", function=SimpleNamespace(name="check_program", arguments="{壊れた"))
     client = FakeOpenAI(SimpleNamespace(content="", tool_calls=[tool_call]))
     turn = OpenAICompatibleProvider("m", "X", "openai", client=client).complete("S", [{"role": "user", "text": "x"}], TOOLS)
